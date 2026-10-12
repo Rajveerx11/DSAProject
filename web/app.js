@@ -405,7 +405,7 @@ function initializeApp() {
         $(`${id}-bytes`).textContent = '0 / 127 bytes';
         $(`${id}-bytes`).classList.remove('over-limit');
       }
-      $('title').focus();
+      if ($('add-form').contains(document.activeElement)) $('title').focus();
     }
   });
   for (const id of ['title', 'artist']) $(id).addEventListener('input', () => validateField(id));

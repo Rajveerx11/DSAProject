@@ -74,6 +74,7 @@ const { chromium } = require('playwright');
     await page.getByLabel('Artist', { exact: false }).fill('Student & Artist');
     await page.locator('#local-file').setInputFiles({ name: 'student.wav', mimeType: 'audio/wav', buffer: Buffer.from(makeDemoWav(8)) });
     data = await operation(page.locator('#add-submit'), 'add');
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'title', 'Normal Add returns focus to title');
     const added = data.playlists[0].nodes.at(-1);
     assert.equal(added.title, 'Local "record" <img src=x>');
     assert.equal(await page.locator('#main-tracks img').count(), 0, 'Metadata is text, not HTML');
@@ -120,8 +121,15 @@ const { chromium } = require('playwright');
     const pending = operation(page.locator('#next'), 'next', true);
     await page.waitForFunction(() => document.getElementById('next').disabled);
     await page.locator('#lab-toggle').focus();
-    await pending;
+    data = await pending;
     assert.equal(await page.evaluate(() => document.activeElement.id), 'lab-toggle');
+    await page.getByLabel('Track title').fill('Pending focus regression');
+    await page.getByLabel('Artist', { exact: false }).fill('Student');
+    const pendingAdd = operation(page.locator('#add-submit'), 'add', true);
+    await page.waitForFunction(() => document.getElementById('add-fields').disabled);
+    await page.locator('#lab-toggle').focus();
+    data = await pendingAdd;
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'lab-toggle', 'Add must not steal intentionally moved focus');
     await page.unroute('**/api/action');
 
     // Empty-list cases through actual UI deletes; then transfer into an empty destination.
