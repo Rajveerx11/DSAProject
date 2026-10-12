@@ -30,7 +30,7 @@ const exited = new Promise((resolve, reject) => {
   server.once('error', reject);
   server.once('exit', (code, signal) => resolve({ code, signal }));
 });
-let checks = 0;
+let checks = 0, resetResponses = 0;
 
 function responseCheck(response) {
   assert.equal(Number(response.headers['content-length']), response.body.length, 'exact byte Content-Length');
@@ -69,25 +69,45 @@ function parseRaw(bytes) {
   const split = bytes.indexOf('\r\n\r\n');
   assert.ok(split >= 0, 'response has complete headers');
   const lines = bytes.subarray(0, split).toString().split('\r\n');
+  assert.match(lines[0], /^HTTP\/1\.1 [1-5][0-9]{2} [^\r\n]+$/, 'valid HTTP status line');
   const headers = {};
   for (const line of lines.slice(1)) {
     const colon = line.indexOf(':');
     assert.ok(colon > 0);
     headers[line.slice(0, colon).toLowerCase()] = line.slice(colon + 1).trim();
   }
+  assert.match(headers['content-length'] ?? '', /^(0|[1-9][0-9]*)$/, 'valid Content-Length');
   return responseCheck({ status: Number(lines[0].split(' ')[1]), headers, body: bytes.subarray(split + 4) });
 }
 
-function raw(bytes, { halfClose = true, fragmented = false } = {}) {
+function rawResponse(bytes, error) {
+  if (error && error.code !== 'ECONNRESET') throw error;
+  // A reset is not success: the same full-response checks must still pass.
+  return parseRaw(bytes);
+}
+
+function raw(bytes, { halfClose = true, fragmented = false, targetPort = port } = {}) {
   return new Promise((resolve, reject) => {
-    const socket = net.createConnection({ host: '127.0.0.1', port });
+    const socket = net.createConnection({ host: '127.0.0.1', port: targetPort });
     const chunks = [];
+    let finished = false;
+    const finish = error => {
+      if (finished) return;
+      finished = true;
+      const buffered = Buffer.concat(chunks);
+      try {
+        const response = rawResponse(buffered, error);
+        if (error) resetResponses++;
+        resolve(response);
+      } catch (failure) {
+        failure.message += `; raw ${JSON.stringify(bytes.slice(0, 100))}, request=${Buffer.byteLength(bytes)} bytes, buffered=${buffered.length} response bytes, transport=${error?.code ?? 'EOF'}`;
+        reject(failure);
+      }
+    };
     socket.setTimeout(6000, () => socket.destroy(new Error('Raw request timeout')));
-    socket.on('error', reject);
+    socket.on('error', finish);
     socket.on('data', data => chunks.push(data));
-    socket.on('end', () => {
-      try { resolve(parseRaw(Buffer.concat(chunks))); } catch (error) { reject(error); }
-    });
+    socket.on('end', () => finish());
     socket.on('connect', () => {
       if (fragmented) {
         const split = bytes.length - 5;
@@ -97,6 +117,22 @@ function raw(bytes, { halfClose = true, fragmented = false } = {}) {
       else socket.write(bytes);
     });
   });
+}
+
+async function resetPeer(response) {
+  // Deterministically exercise the error event, not just EOF: send bytes, then TCP RST.
+  const peer = net.createServer(socket => {
+    socket.once('data', () => {
+      socket.write(response, () => setTimeout(() => socket.resetAndDestroy(), 30));
+    });
+  });
+  peer.listen(0, '127.0.0.1');
+  await once(peer, 'listening');
+  try {
+    return await raw('GET /api/state HTTP/1.1\r\n\r\n', { halfClose: false, targetPort: peer.address().port });
+  } finally {
+    await new Promise((resolve, reject) => peer.close(error => error ? reject(error) : resolve()));
+  }
 }
 
 function wire(body, extra = '', method = 'POST', path = '/api/action') {
@@ -164,6 +200,32 @@ try {
     }),
     exited.then(result => { throw new Error(`Server exited at startup: ${JSON.stringify(result)} ${errors}`); })
   ]);
+  const rejected = await request('GET', '/api/nope');
+  assert.equal(rejected.status, 404);
+  const complete = Buffer.concat([Buffer.from('HTTP/1.1 404 Not Found\r\n'
+    + Object.entries(rejected.headers).map(([key, value]) => `${key}: ${value}\r\n`).join('')
+    + '\r\n'), rejected.body]);
+  const resetsBefore = resetResponses;
+  assert.equal((await resetPeer(complete)).status, 404);
+  assert.equal(resetResponses, resetsBefore + 1, 'must exercise ECONNRESET, not ordinary EOF');
+  for (const [label, bytes] of [
+    ['no response', Buffer.alloc(0)],
+    ['truncated headers', complete.subarray(0, complete.indexOf('\r\n\r\n') + 2)],
+    ['truncated body', complete.subarray(0, -1)],
+    ['surplus body', Buffer.concat([complete, Buffer.from('x')])]
+  ]) {
+    await assert.rejects(() => resetPeer(bytes), /complete headers|exact byte Content-Length/, label);
+  }
+  await assert.rejects(async () => {
+    const wrongStatus = Buffer.from(complete.toString().replace('HTTP/1.1 404', 'HTTP/1.1 200'));
+    assert.equal((await resetPeer(wrongStatus)).status, 404, 'wrong status must fail');
+  }, /wrong status must fail/);
+  for (const code of ['EPIPE', 'ETIMEDOUT']) {
+    const error = Object.assign(new Error('not a tolerated reset'), { code });
+    assert.throws(() => rawResponse(complete, error), failure => failure === error);
+  }
+  console.log('raw reset guards: PASS (complete only; empty/truncated/surplus/wrong-status/other-error rejected)');
+
   let data = await state();
   assert.deepEqual(data.playlists.map(p => p.size), [3, 2]);
   const initial = structuredClone(data.playlists);
@@ -278,10 +340,15 @@ try {
     [wire('action=reset').replace('Content-Length: 12', 'Content-Length: 13'), 400],
     [wire('action=re\0set'), 400],
     [`GET /api/state HTTP/1.1\r\nHost: ${host}\r\nX-Large: ${'x'.repeat(8192)}\r\n\r\n`, 413],
+    [`GET /api/state HTTP/1.1\r\nHost: ${host}\r\nX-Large: ${'x'.repeat(128 * 1024)}\r\n\r\n`, 413],
     [`GET /api/state HTTP/1.1\r\nHost: ${host}\r\n${Array.from({ length: 64 }, (_, i) => `X-${i}: x\r\n`).join('')}\r\n`, 413],
     [wire('action=reset') + `GET /api/state HTTP/1.1\r\nHost: ${host}\r\n\r\n`, 400]
   ];
-  for (const [bytes, status] of malformedWire) await rejectUnchanged(() => raw(bytes), status);
+  for (const [index, [bytes, status]] of malformedWire.entries()) {
+    try { await rejectUnchanged(() => raw(bytes), status); }
+    catch (error) { error.message = `Negative HTTP case ${index + 1}, expected ${status}: ${error.message}`; throw error; }
+  }
+  await rejectUnchanged(() => raw(`GET /api/state HTTP/1.1\r\nHost: ${host}\r\nX-Large: ${'x'.repeat(128 * 1024)}\r\n\r\n`, { halfClose: false }), 413);
   await rejectUnchanged(() => raw(`GET /api/state HTTP/1.1\r\nHost: ${host}\r\n`, { halfClose: false }), 408);
   await rejectUnchanged(() => raw(wire('action=reset').slice(0, -1), { halfClose: false }), 408);
   const fragmented = await raw(wire('action=reset', `Origin: http://${host}\r\n`), { fragmented: true });

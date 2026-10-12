@@ -20,6 +20,8 @@
 
 #define HEADER_CAP 8192
 #define READ_TIMEOUT_MS 2000
+#define CLOSE_TIMEOUT_MS 100
+#define CLOSE_DRAIN_CAP (1024 * 1024)
 #define STATIC_CAP (1024 * 1024)
 
 static volatile sig_atomic_t stopping;
@@ -51,6 +53,24 @@ static ssize_t receive(int fd, void *out, size_t cap, int64_t deadline)
         return n;
     }
     return -1;
+}
+
+static void close_connection(int fd)
+{
+    /* Flush the response before closing unread rejected input (otherwise TCP can reset
+       and discard queued response bytes). Never drain an attacker-controlled stream
+       without both a byte cap and an absolute deadline. */
+    int64_t start = clock_ms();
+    if (shutdown(fd, SHUT_WR) == 0 && start >= 0) {
+        char discard[4096];
+        size_t drained = 0;
+        while (drained < CLOSE_DRAIN_CAP) {
+            ssize_t n = receive(fd, discard, sizeof(discard), start + CLOSE_TIMEOUT_MS);
+            if (n <= 0) break;
+            drained += (size_t)n;
+        }
+    }
+    close(fd);
 }
 
 static bool send_all(int fd, const void *data, size_t length)
@@ -395,7 +415,7 @@ int main(int argc, char **argv)
         struct timeval timeout = {.tv_sec = 2};
         if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == 0)
             handle(fd, port, &app);
-        close(fd);
+        close_connection(fd);
     }
     close(listener);
     app_clear(&app);
