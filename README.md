@@ -1,6 +1,6 @@
 # Musiclab — records & pointers
 
-A local music playlist manager and live **doubly linked list lab** for a second-year DSA demonstration. C owns the nodes and pointer operations. HTML, CSS, and JavaScript display C's returned state and handle browser audio.
+A silent playlist manager and side-by-side **doubly linked list simulator** for a second-year DSA demonstration. C owns the nodes and records actual visits and pointer assignments. HTML, CSS, and JavaScript replay that trace with moving blocks and directed arrows.
 
 ## Run
 
@@ -8,27 +8,30 @@ Supported: Linux or Windows through WSL. You need a C11 compiler and Make; Node.
 
 ```sh
 make
-./build/musiclab
+./build/musiclab --port 8081
 ```
 
-Open **http://127.0.0.1:8080** in your browser. Run from the repository root so the server can find `web/`. Stop with Ctrl+C. If that port is occupied:
+Open **http://localhost:8081** in your browser. Run from the repository root so the server can find `web/`. Stop with Ctrl+C. Port 8080 may already belong to Windows EDB/Postgres; use an unused port in both Windows and WSL. Without `--port`, the C server defaults to 8080.
 
-```sh
-./build/musiclab --port 8081
+From Windows PowerShell, execute these as separate commands (older PowerShell does not support `&&`):
+
+```powershell
+wsl.exe --cd /mnt/c/DSAProject -- make
+wsl.exe --cd /mnt/c/DSAProject -- ./build/musiclab --port 8081
 ```
 
 The server binds only to loopback. This is a single-process, serial classroom application, **not a production web server** or an authenticated multi-user service. Do not expose it to the internet.
 
-## Using the player
+## Using the simulator
 
-- The demo starts with three tracks in **My playlist** and two in **Side B**.
-- Select a main-playlist track, press Play, and try Next/Previous. Navigation stops at the ends; it does not wrap.
-- Add a title and artist to either playlist. An optional local audio file stays in the browser; only metadata goes to C. Supported audio formats depend on your browser.
-- Without a file, playback uses explicitly labelled, locally generated 12-second **demo tones**, not recordings of the named songs.
-- Delete songs, reverse either playlist, merge Side B into My playlist, or reset the demo.
-- Open **Show pointer lab** to inspect both lists, NULL links, head/tail/current IDs, changed nodes, and the backend's explanation.
+- **Left:** compact operation desk, current record, Add, Next/Previous, both playlists, Delete, Reverse, Merge, and Reset. This collection always displays committed C state.
+- **Right:** always-visible pointer canvas and replay inspector. No scrolling down to reveal a hidden lab on desktop; small screens stack the sections.
+- The demo starts with three sample records in **My playlist** and two in **Side B**. No real music, audio files, or playback is needed.
+- An operation automatically replays actual C allocation, comparison/visit, pointer-write, and free events. Watch `prev`, `next`, `head`, `tail`, and `current` change, one recorded assignment at a time.
+- Use **Pause/Continue**, **Previous step**, **Next step**, **Replay**, **Finish**, and **Speed**. Disable **Auto-play steps** for a viva-style manual walkthrough. Large traces (>80 events) start paused. Reduced motion immediately shows final state, while manual steps remain available without motion.
+- Reverse visibly rearranges the same node blocks; Merge connects and moves Side B blocks into A without copying their IDs. Deleted allocations appear briefly as labelled freed ghosts.
 
-The UI updates after each completed C operation. It does not pretend to be a debugger stepping through live machine instructions. Nodes use logical identifiers, not memory addresses. Another browser tab's changes appear after **Refresh state**, not via push synchronization.
+C commits before the animation begins. The right pane explicitly labels intermediate/historical frames: they are recorded history, not live CPU debugging. Intermediate pointer writes can temporarily break list invariants; only the final frame is the canonical committed state. Node IDs are logical identifiers, not memory addresses. Replay affects display only and does not mutate C or execute a separate JavaScript linked-list algorithm. Another tab's changes appear after **Refresh state**; every operation's before snapshot comes from C rather than a possibly stale browser snapshot.
 
 ### Defined behaviour
 
@@ -39,19 +42,19 @@ The UI updates after each completed C operation. It does not pretend to be a deb
 - IDs are process-wide and never reused during that server process, including after reset.
 - There are at most 200 songs across both playlists. Title and artist must be non-empty valid UTF-8, at most 127 bytes each, with no control characters. The backend trims ASCII spaces.
 
-State lives in RAM and disappears when the server stops. Browser-local audio associations disappear on reload; the UI honestly falls back to demo tones. No song files are uploaded or stored by C.
+State lives in RAM and disappears when the server stops. Track titles/artists are sample labels only. No audio files, uploads, persistence, or internet streaming.
 
 ## Where the DSA lives
 
 | Path | Responsibility |
 |---|---|
 | `src/playlist.h`, `src/playlist.c` | Node structs, manual pointer operations, allocation and freeing |
-| `src/api.h`, `src/api.c` | Validate commands; traverse real nodes to serialize state; record explanations |
+| `src/api.h`, `src/api.c` | Validate commands; copy before state; capture and serialize real C events |
 | `src/server.c` | Loopback HTTP adapter and allowlisted static files |
 | `web/index.html`, `web/styles.css` | Accessible responsive player and pointer-lab layout |
-| `web/app.js` | Requests, safe rendering, operation highlighting, browser audio |
-| `tests/native.c`, `tests/api.mjs`, `web/check.cjs` | Pointer, API, security-input, and frontend checks |
-| `API.md`, `PLAN.md` | Shared contract and delivery plan |
+| `web/app.js` | Requests, safe rendering, C-trace projection, directed arrows, native animations |
+| `tests/native.c`, `tests/trace.c`, `tests/api.mjs`, `web/check.cjs` | Pointer invariants, trace order/parity/lifetime/capacity, API, and projection checks |
+| `API.md`, `PLAN.md`, `SIMULATION.md` | Shared API, delivery plan, and side-by-side replay contract |
 
 ```c
 typedef struct SongNode {
@@ -78,7 +81,7 @@ Let n be the number of nodes involved. These are costs of the linked-list operat
 | Concatenate | O(1) | Connect endpoints; transfer ownership and size |
 | Clear | O(n) | Free every node |
 
-Stored nodes use **O(n)** space; pointer operations use **O(1)** auxiliary space. Every API response serializes both playlists, so the full request/response still takes **O(n)** time, even when the underlying mutation is O(1). Browser rendering and highlighting are also linear in displayed nodes.
+Stored nodes use **O(n)** space; the underlying pointer operations use **O(1)** auxiliary space. Educational before snapshots and traces add **O(n)** storage. Every API response copies/serializes both lists and events, so full request/response time is **O(n)** even for an O(1) mutation. Rendering an individual replay frame is linear in records/events; replaying all frames is presentation overhead, not the algorithm's complexity.
 
 ### Pointer invariants
 
@@ -87,8 +90,8 @@ For every nonempty list: `head->prev == NULL`, `tail->next == NULL`, neighbourin
 ## Validate
 
 ```sh
-make check       # warning-clean C build, native/API tests, JS syntax and frontend unit checks
-make sanitize    # native + API tests with AddressSanitizer, UBSan, and leak detection
+make check       # warning-clean C build, native/trace/API tests, JS syntax and projection checks
+make sanitize    # native + trace + API tests with ASan, UBSan, and leak detection
 ```
 
 Individual checks:
@@ -110,12 +113,12 @@ node /tmp/musiclab-browser-tools/node_modules/playwright/cli.js install chromium
 NODE_PATH=/tmp/musiclab-browser-tools/node_modules make test-browser
 ```
 
-If Chromium needs system libraries, use Playwright's `install --with-deps chromium` command. Alternatively set `CHROMIUM_PATH` to an existing Chromium executable. The test owns an ephemeral C server and closes it on completion. It covers actual demo/local WAV playback, mutations, pointer rendering, responsive widths, keyboard focus, reduced motion, and page errors. Screenshots default to `/tmp/musiclab-browser-evidence`; override `MUSICLAB_EVIDENCE` if needed. CI runs these checks and uploads screenshots. This vanilla JavaScript project has no TypeScript typecheck or bundler build step.
+If Chromium needs system libraries, use Playwright's `install --with-deps chromium` command. Alternatively set `CHROMIUM_PATH` to an existing Chromium executable. The test owns an ephemeral C server and closes it on completion. It covers actual C-recorded intermediate/final frames, moving blocks and settled arrow geometry, visits/comparisons, allocation/free ghosts, replay controls and interruption, responsive widths, keyboard focus, reduced motion, and page errors. Screenshots default to `/tmp/musiclab-simulator-evidence`; override `MUSICLAB_EVIDENCE` if needed. CI runs these checks and uploads screenshots. This vanilla JavaScript project has no TypeScript typecheck or bundler build step.
 
 ## Ten-minute demonstration
 
 1. **0–1 minute — Problem:** Explain why a playlist needs forward/back navigation and why a doubly linked list fits.
-2. **1–3 — Navigate:** Play demo audio, move Next/Previous, open the pointer lab, identify head/tail/current and NULL boundaries.
+2. **1–3 — Navigate:** Move Next/Previous on the left; Pause/Step on the right to inspect actual current-pointer writes and NULL boundaries.
 3. **3–5 — Insert/delete:** Add a song; inspect old/new tail links. Delete a middle node, then current; show the replacement current.
 4. **5–7 — Reverse:** Keep the current song selected; reverse and show exchanged links/endpoints.
 5. **7–8 — Concatenate:** Merge Side B; verify IDs stay unchanged and source becomes empty.
@@ -128,7 +131,10 @@ If Chromium needs system libraries, use Playwright's `install --with-deps chromi
 - Why is delete by ID O(n)? Finding the node takes time, even though unlinking is O(1).
 - What changes during reverse? Every node exchanges next/prev, then head/tail exchange. Current remains the same node.
 - What prevents dangling pointers? Update current and neighbours before freeing; clear source pointers after transferring ownership.
-- Why does JavaScript contain arrays? They are read-only snapshots for display, not the implementation of the playlist.
+- Why does JavaScript contain arrays/maps? They project C snapshots and recorded field writes for display; they do not implement playlist search, reverse, insertion, or deletion algorithms.
+- Are intermediate frames valid lists? Not always: during reverse/merge/unlink, pointer assignments happen separately. C's final state must satisfy the invariants.
+- Are comparisons invented? No: `playlist_find` records each visited node immediately before its actual ID comparison.
+- What does Reset replay? Reset is an explicit committed replacement with an empty trace; it does not fabricate instructions for old nodes.
 - Why does merge's HTTP request still scale with n? C must serialize the complete state and the browser must render it.
 
 ## Local review workflow
