@@ -160,6 +160,7 @@ function initializeApp() {
   let requestTimer = null;
   let hidden = false;
   let projection = null;
+  let geometryFrame = null;
   const animations = new Set();
   const cards = new Map();
   const markers = new Map();
@@ -185,11 +186,23 @@ function initializeApp() {
     if (motion.matches || hidden || !node.animate) return;
     const animation = node.animate(keyframes, { duration: Math.min(350, 350 / Number($('replay-speed').value)), easing: 'ease-out', ...options });
     animations.add(animation);
+    if (node.matches('.node-card, .current-marker') && geometryFrame === null) {
+      geometryFrame = requestAnimationFrame(redrawGeometry);
+    }
     const release = () => animations.delete(animation);
     animation.onfinish = release;
     animation.oncancel = release;
   }
+  function redrawGeometry() {
+    geometryFrame = null;
+    drawEdges(); // Read the transformed cards so edges follow each FLIP frame.
+    if ([...animations].some(animation => animation.effect?.target?.matches('.node-card, .current-marker'))) {
+      geometryFrame = requestAnimationFrame(redrawGeometry);
+    }
+  }
   function cancelAnimations() {
+    if (geometryFrame !== null) cancelAnimationFrame(geometryFrame);
+    geometryFrame = null;
     for (const animation of animations) animation.cancel();
     animations.clear();
   }
@@ -197,6 +210,7 @@ function initializeApp() {
   function lastFrame() { return state.operation.trace.events.length + 1; }
 
   function updateControls() {
+    const replayFocus = document.activeElement;
     const locked = pending || !connected || !state;
     // Keep editable fields focused while pending. Submission alone is locked.
     $('add-fields').disabled = !connected || !state;
@@ -219,6 +233,10 @@ function initializeApp() {
     $('replay-next').disabled = unavailable || frame === lastFrame();
     $('replay-replay').disabled = unavailable || !state.operation.trace.events.length;
     $('replay-finish').disabled = unavailable || frame === lastFrame();
+    if (document.activeElement === document.body && replayFocus?.matches('button[id^="replay-"]') && replayFocus.disabled) {
+      const fallback = $('replay-replay').disabled ? $('replay-auto') : $('replay-replay');
+      fallback.focus({ preventScroll: true });
+    }
   }
 
   function renderTracks() {
@@ -340,7 +358,7 @@ function initializeApp() {
       const path = svgElement('path', { d, class: `pointer-edge edge-${backwards ? 'prev' : 'next'}${active ? ' edge-active' : ''}${old ? ' edge-old' : ''}`, 'marker-end': `url(#arrow-${active || old ? 'active' : backwards ? 'prev' : 'ink'})`, 'data-source': sourceId === null ? listId : sourceId, 'data-target': targetId ?? 'null', 'data-field': field });
       svg.append(path);
       if (targetId === null) {
-        const label = svgElement('text', { x: x2 + (backwards ? -22 : 4), y: y2 + 3, class: 'edge-null' });
+        const label = svgElement('text', { x: x2 + (backwards ? -22 : 4), y: y2 + (backwards ? -7 : 3), class: 'edge-null' });
         label.textContent = 'NULL';
         svg.append(label);
       }
