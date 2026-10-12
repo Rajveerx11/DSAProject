@@ -3,6 +3,29 @@
 #include <stdlib.h>
 #include <string.h>
 
+static uint32_t node_id(const SongNode *node) { return node ? node->id : 0; }
+
+static void emit(Playlist *list, PlaylistEventKind kind, const SongNode *node)
+{
+    PlaylistEvent event = {.kind = kind, .id = node_id(node)};
+    if (kind == PLAYLIST_ALLOCATE) {
+        strcpy(event.title, node->title);
+        strcpy(event.artist, node->artist);
+    }
+    list->observer(list->observer_context, list, &event);
+}
+
+/* Disabled tracing costs only the branch; record the actual assignment, even a no-op. */
+#define ASSIGN(list, owner, field_name, slot, target) do { \
+    if ((list)->observer) { \
+        PlaylistEvent event = {.kind = PLAYLIST_POINTER, .field = (field_name), \
+            .id = node_id(owner), .from = node_id(slot)}; \
+        (slot) = (target); \
+        event.to = node_id(slot); \
+        (list)->observer((list)->observer_context, (list), &event); \
+    } else { (slot) = (target); } \
+} while (0)
+
 bool song_text(char out[SONG_TEXT_BYTES + 1], const char *input)
 {
     const unsigned char *start = (const unsigned char *)input;
@@ -47,19 +70,25 @@ SongNode *playlist_add(Playlist *list, uint32_t id, const char *title,
     node->id = id;
     strcpy(node->title, clean_title);
     strcpy(node->artist, clean_artist);
-    node->prev = list->tail;
-    if (list->tail) list->tail->next = node;
-    else list->head = node;
-    list->tail = node;
-    if (!list->current) list->current = node;
+    if (list->observer) emit(list, PLAYLIST_ALLOCATE, node);
+    ASSIGN(list, node, POINTER_PREV, node->prev, list->tail);
+    if (list->tail) ASSIGN(list, list->tail, POINTER_NEXT, list->tail->next, node);
+    else ASSIGN(list, NULL, POINTER_HEAD, list->head, node);
+    ASSIGN(list, NULL, POINTER_TAIL, list->tail, node);
+    if (!list->current) ASSIGN(list, NULL, POINTER_CURRENT, list->current, node);
     list->size++;
     return node;
 }
 
 SongNode *playlist_find(const Playlist *list, uint32_t id)
 {
-    for (SongNode *node = list->head; node; node = node->next)
+    for (SongNode *node = list->head; node; node = node->next) {
+        if (list->observer) {
+            PlaylistEvent event = {.kind = PLAYLIST_VISIT, .id = node->id};
+            list->observer(list->observer_context, list, &event);
+        }
         if (node->id == id) return node;
+    }
     return NULL;
 }
 
@@ -67,23 +96,34 @@ bool playlist_delete(Playlist *list, uint32_t id)
 {
     SongNode *node = playlist_find(list, id);
     if (!node) return false;
-    if (list->current == node)
-        list->current = node->next ? node->next : node->prev;
-    if (node->prev) node->prev->next = node->next;
-    else list->head = node->next;
-    if (node->next) node->next->prev = node->prev;
-    else list->tail = node->prev;
-    list->size--;
-    free(node);
+    playlist_delete_node(list, node);
     return true;
+}
+
+void playlist_delete_node(Playlist *list, SongNode *node)
+{
+    if (list->current == node)
+        ASSIGN(list, NULL, POINTER_CURRENT, list->current, node->next ? node->next : node->prev);
+    if (node->prev) ASSIGN(list, node->prev, POINTER_NEXT, node->prev->next, node->next);
+    else ASSIGN(list, NULL, POINTER_HEAD, list->head, node->next);
+    if (node->next) ASSIGN(list, node->next, POINTER_PREV, node->next->prev, node->prev);
+    else ASSIGN(list, NULL, POINTER_TAIL, list->tail, node->prev);
+    list->size--;
+    if (list->observer) emit(list, PLAYLIST_FREE, node);
+    free(node);
 }
 
 bool playlist_select(Playlist *list, uint32_t id)
 {
     SongNode *node = playlist_find(list, id);
     if (!node) return false;
-    list->current = node;
+    playlist_select_node(list, node);
     return true;
+}
+
+void playlist_select_node(Playlist *list, SongNode *node)
+{
+    ASSIGN(list, NULL, POINTER_CURRENT, list->current, node);
 }
 
 bool playlist_move(Playlist *list, bool forward)
@@ -91,7 +131,7 @@ bool playlist_move(Playlist *list, bool forward)
     if (!list->current) return false;
     SongNode *next = forward ? list->current->next : list->current->prev;
     if (!next) return false;
-    list->current = next;
+    ASSIGN(list, NULL, POINTER_CURRENT, list->current, next);
     return true;
 }
 
@@ -100,13 +140,13 @@ void playlist_reverse(Playlist *list)
     SongNode *node = list->head;
     while (node) {
         SongNode *next = node->next;
-        node->next = node->prev;
-        node->prev = next;
+        ASSIGN(list, node, POINTER_NEXT, node->next, node->prev);
+        ASSIGN(list, node, POINTER_PREV, node->prev, next);
         node = next;
     }
     SongNode *head = list->head;
-    list->head = list->tail;
-    list->tail = head;
+    ASSIGN(list, NULL, POINTER_HEAD, list->head, list->tail);
+    ASSIGN(list, NULL, POINTER_TAIL, list->tail, head);
 }
 
 bool playlist_merge(Playlist *destination, Playlist *source)
@@ -115,25 +155,32 @@ bool playlist_merge(Playlist *destination, Playlist *source)
         return false;
     if (!source->head) return true;
     if (destination->tail) {
-        destination->tail->next = source->head;
-        source->head->prev = destination->tail;
+        ASSIGN(destination, destination->tail, POINTER_NEXT, destination->tail->next, source->head);
+        ASSIGN(source, source->head, POINTER_PREV, source->head->prev, destination->tail);
     } else {
-        destination->head = source->head;
-        destination->current = source->current;
+        ASSIGN(destination, NULL, POINTER_HEAD, destination->head, source->head);
+        ASSIGN(destination, NULL, POINTER_CURRENT, destination->current, source->current);
     }
-    destination->tail = source->tail;
+    ASSIGN(destination, NULL, POINTER_TAIL, destination->tail, source->tail);
     destination->size += source->size;
-    *source = (Playlist){0};
+    ASSIGN(source, NULL, POINTER_HEAD, source->head, NULL);
+    ASSIGN(source, NULL, POINTER_TAIL, source->tail, NULL);
+    ASSIGN(source, NULL, POINTER_CURRENT, source->current, NULL);
+    source->size = 0;
     return true;
 }
 
 void playlist_clear(Playlist *list)
 {
     SongNode *node = list->head;
+    ASSIGN(list, NULL, POINTER_HEAD, list->head, NULL);
+    ASSIGN(list, NULL, POINTER_TAIL, list->tail, NULL);
+    ASSIGN(list, NULL, POINTER_CURRENT, list->current, NULL);
     while (node) {
         SongNode *next = node->next;
+        if (list->observer) emit(list, PLAYLIST_FREE, node);
         free(node);
         node = next;
     }
-    *list = (Playlist){0};
+    list->size = 0;
 }
