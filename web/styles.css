@@ -120,7 +120,7 @@ progress::-webkit-progress-value { background:var(--accent); }
 .node-card.is-target { border:2px solid var(--accent-dark); padding:9px; background:#fff0df; }
 .node-card.is-visited { outline:3px solid var(--accent); outline-offset:3px; }
 .node-card.is-allocated { border:2px dashed var(--accent); padding:9px; }
-.node-card.is-freed { border-style:dashed; background:#e1dacb; color:var(--muted); }
+.node-card.is-freed { border-style:dashed; background:#e1dacb; color:var(--muted); opacity:.3; }
 .node-card.is-freed .node-title { text-decoration:line-through; }
 .node-topline { display:flex; align-items:center; justify-content:space-between; gap:6px; font:11px var(--mono); }
 .node-role { color:var(--muted); font-size:8px; }

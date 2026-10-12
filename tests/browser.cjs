@@ -114,11 +114,33 @@ const { projectTrace } = require(path.join(root, 'web/app.js'));
     assert.equal(await page.evaluate(()=>document.activeElement.dataset.focusKey), `select-${original.at(-1)}`);
     await stepAll(data);
     assert.equal(data.playlists[0].current, original.at(-1));
+    // A completed ghost effect must not survive a rewind onto the same live card.
+    await page.locator('#replay-replay').click();
+    const freeFrame = data.operation.trace.events.findIndex(event=>event.kind==='free') + 1;
+    for (let index=1;index<=freeFrame;index++) await page.locator('#replay-next').click();
+    await frameCheck(data, freeFrame);
+    const ghostSelector = `.node-card[data-id="${added.id}"]`;
+    const animationSettled = selector => [...document.querySelector(selector).getAnimations()].every(animation=>animation.playState!=='running');
+    await page.waitForFunction(animationSettled, ghostSelector);
+    assert.equal(await page.locator(ghostSelector).evaluate(node=>getComputedStyle(node).opacity), '0.3');
+    await page.locator('#replay-previous').click();
+    await page.waitForFunction(animationSettled, ghostSelector);
+    await frameCheck(data, freeFrame-1);
+    assert.equal(await page.locator(ghostSelector).evaluate(node=>getComputedStyle(node).opacity), '1', 'Rewound live node is not a faded ghost');
+    assert.equal(await page.locator(ghostSelector).evaluate(node=>node.getAnimations().length), 0, 'No retained filled ghost effect');
+    await page.locator('#replay-finish').click();
 
     data = await operation(page.locator('#reverse-main'), 'reverse', true); await stepAll(data);
     assert.deepEqual(data.playlists[0].nodes.map(node=>node.id), [...original].reverse());
     await settledEdges();
     data = await operation(page.locator('#reverse-main'), 'reverse'); await stepAll(data); await settledEdges();
+    // Changing speed during a final reordering must settle both cards and SVG edges.
+    await page.locator('#replay-speed').selectOption('1');
+    await page.locator('#replay-replay').click();
+    await page.locator('#replay-finish').click();
+    await page.waitForFunction(()=>[...document.querySelectorAll('.node-card')].some(node=>node.getAnimations().some(animation=>animation.playState==='running')));
+    await page.locator('#replay-speed').selectOption('2');
+    await settledEdges(); await frameCheck(data, data.operation.trace.events.length+1);
     const beforeMerge = data.playlists.flatMap(list=>list.nodes.map(node=>node.id));
     data = await operation(page.locator('#merge'), 'merge', true); await stepAll(data);
     assert.deepEqual(data.playlists[0].nodes.map(node=>node.id), beforeMerge);

@@ -453,7 +453,7 @@ function initializeApp() {
         } else if (!old && projection.event?.kind === 'allocate') {
           animate(card, [{ transform: 'translateY(16px) scale(.92)', opacity: 0 }, { transform: 'translateY(0) scale(1)', opacity: 1 }]);
         }
-        if (projection.ghost?.id === id) animate(card, [{ opacity: 1 }, { opacity: .3 }], { fill: 'forwards' });
+        if (projection.ghost?.id === id) animate(card, [{ opacity: 1 }, { opacity: .3 }]);
       }
       for (const [id, marker] of markers) {
         const previous = oldMarkers.get(id);
@@ -636,7 +636,7 @@ function initializeApp() {
     if (!$('replay-auto').checked) { pause(); renderReplay(); }
     else if (state && frame < lastFrame() && shouldAutoPlay(state.operation.trace.events.length, motion.matches, true)) { running = true; renderReplay(); schedule(); }
   });
-  $('replay-speed').addEventListener('change', () => { cancelAnimations(); if (running) schedule(); });
+  $('replay-speed').addEventListener('change', () => { cancelAnimations(); drawEdges(); if (running) schedule(); });
   motion.addEventListener('change', () => { if (motion.matches) finish(); });
   const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => drawEdges()) : null;
   observer?.observe($('diagrams'));
