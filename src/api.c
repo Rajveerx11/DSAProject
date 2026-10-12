@@ -284,7 +284,9 @@ int api_action(App *app, char *body, Response *out)
         if (count != 2) return fail(out, 400, "Reverse accepts only action and playlist.");
         op = (Operation){.action = "reverse", .message = "Reversed links; kept the same current song.", .complexity = "O(n)",
             .steps = {"Swap each node.prev and node.next", "Swap head and tail", "Keep current song"}};
-        for (SongNode *node = list->head; node; node = node->next) changed(&op, node);
+        /* Traversal visits unique nodes; no duplicate scan is needed here. */
+        for (SongNode *node = list->head; node; node = node->next)
+            op.changed[op.count++] = node->id;
         playlist_reverse(list);
     } else if (!strcmp(action, "merge")) {
         int source = list_index(value(form, count, "source"));

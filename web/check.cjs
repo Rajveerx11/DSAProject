@@ -2,7 +2,7 @@
 // Run: node web/check.cjs. Fixtures test validation only; the UI never substitutes C state.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const { textProblem, pointer, validateState, makeDemoWav } = require('./app.js');
+const { trimSongText, textProblem, pointer, validateState, makeDemoWav } = require('./app.js');
 
 assert.equal(textProblem('  A record  '), '');
 assert.equal(textProblem('a'.repeat(127)), '');
@@ -15,6 +15,14 @@ assert.notEqual(textProblem(' \n '), '');
 assert.notEqual(textProblem('side\u0000b'), '');
 assert.notEqual(textProblem('side\tb'), '');
 assert.equal(textProblem('<img src=x onerror=alert(1)> & "record"'), '');
+assert.equal(trimSongText('  A record  '), 'A record');
+for (const whitespace of ['\u00a0', '\u2003', '\ufeff', '\u2028', '\u2029']) {
+  assert.equal(trimSongText(` ${whitespace} `), whitespace, 'Only ASCII spaces are trimmed');
+  assert.equal(textProblem(whitespace), '', 'Match metadata accepted by C');
+}
+for (let cp = 0x7f; cp <= 0x9f; cp++) {
+  assert.notEqual(textProblem(`A${String.fromCodePoint(cp)}B`), '', 'Reject all C1 controls like C');
+}
 assert.equal(pointer(null), 'NULL');
 assert.equal(pointer(9), '#9');
 
@@ -31,6 +39,11 @@ const snapshot = {
 const original = JSON.stringify(snapshot);
 assert.equal(validateState(snapshot), snapshot);
 assert.equal(JSON.stringify(snapshot), original, 'Reading state must not mutate it');
+for (const title of ['\u00a0', '\u2003', '\ufeff', '\u2028', '\u2029', 'A\u00a0B']) {
+  const unicodeSnapshot = structuredClone(snapshot);
+  unicodeSnapshot.playlists[0].nodes[0].title = title;
+  assert.equal(validateState(unicodeSnapshot), unicodeSnapshot, 'Accepted C metadata must remain renderable');
+}
 for (const damage of [
   s => { s.playlists[0].nodes[0].next = null; },
   s => { s.playlists[0].nodes[1].prev = null; },

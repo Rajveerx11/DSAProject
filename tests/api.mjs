@@ -6,13 +6,17 @@ import http from 'node:http';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
+
+const { validateState, textProblem } = createRequire(import.meta.url)('../web/app.js');
 
 // The test owns its child, ephemeral port, and temporary static fixtures, not repository web/.
 const binary = resolve(process.argv[2] || './build/musiclab');
 const fixture = await mkdtemp(join(tmpdir(), 'musiclab-api-'));
 await mkdir(join(fixture, 'web'));
 const assets = { 'index.html': '<!doctype html><title>API fixture</title>\n',
-  'styles.css': 'body { color: black; }\n', 'app.js': '"use strict";\n' };
+  'styles.css': 'body { color: black; }\n', 'app.js': '"use strict";\n',
+  'favicon.svg': '<svg xmlns="http://www.w3.org/2000/svg"/>\n' };
 for (const [name, content] of Object.entries(assets)) await writeFile(join(fixture, 'web', name), content);
 await writeFile(join(fixture, 'web', 'secret.txt'), 'not public');
 const reservation = net.createServer();
@@ -160,7 +164,7 @@ function invariant(state) {
   assert.ok(state.operation.action && state.operation.message && state.operation.complexity);
   assert.ok(Array.isArray(state.operation.steps) && Array.isArray(state.operation.changed));
   assert.equal(new Set(state.operation.changed).size, state.operation.changed.length);
-  return state;
+  return validateState(state); // Every accepted C snapshot must also be accepted by the UI.
 }
 
 async function state() {
@@ -284,6 +288,18 @@ try {
   assert.equal(data.playlists[0].nodes.at(-1).title, safeTitle);
   data = await action({ action: 'add', playlist: 'secondary', title: '\u00e9'.repeat(63) + 'x', artist: 'x'.repeat(127) });
   assert.equal(Buffer.byteLength(data.playlists[1].nodes.at(-1).title), 127);
+  for (const whitespace of ['\u00a0', '\u2003', '\ufeff', '\u2028', '\u2029']) {
+    assert.equal(textProblem(whitespace), '');
+    data = await action({ action: 'add', playlist: 'main', title: ` ${whitespace} `, artist: 'Artist' });
+    assert.equal(data.playlists[0].nodes.at(-1).title, whitespace);
+  }
+  for (let cp = 0x7f; cp <= 0x9f; cp++) {
+    const title = `A${String.fromCodePoint(cp)}B`;
+    assert.notEqual(textProblem(title), '');
+    await rejectUnchanged(() => request('POST', '/api/action', new URLSearchParams({
+      action: 'add', playlist: 'main', title, artist: 'Artist'
+    }).toString()), 400);
+  }
   const invalidForms = [
     '', 'action=reset&action=reset', 'action=reset&extra=x', 'action=reset&playlist=main',
     'action=%GG', 'action=reset&', 'action=reset&=x', 'action',
@@ -360,7 +376,7 @@ try {
   const localhost = await request('POST', '/api/action', 'action=reset', { Host: `localhost:${port}`, Origin: `http://localhost:${port}` });
   assert.equal(localhost.status, 200);
 
-  // Only the three fixed assets (plus / alias) are public. No dynamic path decoding.
+  // Only the four fixed assets (plus / alias) are public. No dynamic path decoding.
   for (const [name, content] of Object.entries(assets)) {
     const res = await request('GET', `/${name}`);
     assert.equal(res.status, 200); assert.equal(res.body.toString(), content);
@@ -393,8 +409,12 @@ try {
   await rejectUnchanged(() => request('POST', '/api/action', 'action=add&playlist=main&title=x&artist=y'), 400);
   data = await action({ action: 'merge', playlist: 'main', source: 'secondary' });
   assert.equal(data.playlists[0].size, 200);
-  await action({ action: 'reverse', playlist: 'main' });
-  await action({ action: 'reverse', playlist: 'main' });
+  const forwardIds = data.playlists[0].nodes.map(node => node.id);
+  data = await action({ action: 'reverse', playlist: 'main' });
+  assert.deepEqual(data.operation.changed, forwardIds, 'Highlight every unique node once');
+  assert.equal(data.operation.changed.length, 200);
+  data = await action({ action: 'reverse', playlist: 'main' });
+  assert.deepEqual(data.operation.changed, [...forwardIds].reverse());
   await action({ action: 'delete', playlist: 'main', id: data.playlists[0].head });
   data = await action({ action: 'add', playlist: 'main', title: 'new', artist: 'demo' });
   assert.ok(data.playlists[0].tail > maximum);

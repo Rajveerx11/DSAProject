@@ -2,10 +2,15 @@
 
 const utf8 = new TextEncoder();
 
+// Match C's metadata policy exactly: trim ASCII spaces, not Unicode whitespace.
+function trimSongText(value) {
+  return value.replace(/^ +| +$/g, '');
+}
+
 function textProblem(value) {
-  const text = value.trim();
+  const text = trimSongText(value);
   if (!text) return 'Enter a non-empty value.';
-  if (/[\u0000-\u001f\u007f]/u.test(text)) return 'Control characters are not allowed.';
+  if (/[\u0000-\u001f\u007f-\u009f]/u.test(text)) return 'Control characters are not allowed.';
   if (utf8.encode(text).length > 127) return 'Use at most 127 UTF-8 bytes (some characters use more than one byte).';
   return '';
 }
@@ -124,7 +129,10 @@ function initializeApp() {
     document.querySelectorAll('.track-select, .delete-track').forEach(button => { button.disabled = locked; });
     $('collection').setAttribute('aria-busy', String(pending));
     $('add-form').setAttribute('aria-busy', String(pending));
-    $('connection').textContent = pending ? 'C request pending…' : connected ? 'C state connected' : 'C API unavailable';
+    let connectionMessage = 'C API unavailable';
+    if (pending) connectionMessage = 'C request pending…';
+    else if (connected) connectionMessage = 'C state connected';
+    $('connection').textContent = connectionMessage;
     $('connection').classList.toggle('connected', connected && !pending);
     $('connection').classList.toggle('disconnected', !connected && !pending);
     $('play-label').textContent = audio.paused ? 'Play' : 'Pause';
@@ -277,18 +285,24 @@ function initializeApp() {
     }
   }
 
-  function restoreFocus(key, listId) {
-    if (!key) return;
+  function restoreFocus(key, listId, original) {
+    // Do not steal focus if the user moved to another control while waiting.
+    if (document.activeElement !== document.body && document.activeElement !== original) return;
+    if (!key && !original?.matches('button, input, select')) return;
     const buttons = [...document.querySelectorAll('[data-focus-key]')];
-    const target = buttons.find(button => button.dataset.focusKey === key) ||
-      buttons.find(button => button.dataset.focusKey === `select-${playlist(listId)?.current}`) || $(`${listId}-heading`);
+    let target = key ? buttons.find(button => button.dataset.focusKey === key) : original;
+    if (!target?.isConnected || target.disabled || target.closest('fieldset:disabled')) {
+      target = buttons.find(button => !button.disabled && button.dataset.focusKey === `select-${playlist(listId)?.current}`) ||
+        $(`${listId}-heading`);
+    }
     target?.focus({ preventScroll: true });
   }
 
   async function requestState(fields = null, file = null) {
     if (pending) return false; // One in-flight operation; no optimistic state and no queue of stale clicks.
-    const focusKey = document.activeElement?.dataset.focusKey;
-    const focusList = document.activeElement?.dataset.playlist ?? 'main';
+    const focusTarget = document.activeElement;
+    const focusKey = focusTarget?.dataset.focusKey;
+    const focusList = focusTarget?.dataset.playlist ?? 'main';
     const oldIds = new Set(state?.playlists.flatMap(list => list.nodes.map(node => node.id)) ?? []);
     pending = true;
     feedback(fields ? `C is applying ${fields.action}…` : 'Reading the C playlist state…');
@@ -349,7 +363,7 @@ function initializeApp() {
       clearTimeout(timer);
       pending = false;
       updateControls();
-      restoreFocus(focusKey, focusList);
+      restoreFocus(focusKey, focusList, focusTarget);
     }
   }
 
@@ -366,7 +380,7 @@ function initializeApp() {
 
   function validateField(id) {
     const input = $(id);
-    const count = utf8.encode(input.value.trim()).length;
+    const count = utf8.encode(trimSongText(input.value)).length;
     const problem = textProblem(input.value);
     input.setCustomValidity(problem);
     $(`${id}-bytes`).textContent = `${count} / 127 bytes`;
@@ -380,7 +394,7 @@ function initializeApp() {
     const titleValid = validateField('title');
     const artistValid = validateField('artist');
     if (!titleValid || !artistValid) { $('add-form').reportValidity(); return; }
-    const fields = { action: 'add', playlist: $('destination').value, title: $('title').value.trim(), artist: $('artist').value.trim() };
+    const fields = { action: 'add', playlist: $('destination').value, title: trimSongText($('title').value), artist: trimSongText($('artist').value) };
     const success = await requestState(fields, $('local-file').files[0] ?? null);
     if (success) {
       $('title').value = '';
@@ -478,4 +492,4 @@ function initializeApp() {
 
 if (typeof document !== 'undefined') initializeApp();
 // No runtime dependency: the small Node check uses the same validation and WAV encoder.
-if (typeof module !== 'undefined') module.exports = { textProblem, pointer, validateState, makeDemoWav };
+if (typeof module !== 'undefined') module.exports = { trimSongText, textProblem, pointer, validateState, makeDemoWav };

@@ -302,6 +302,8 @@ static void serve_static(int fd, const char *path)
         file = "web/styles.css"; type = "text/css; charset=utf-8";
     } else if (!strcmp(path, "/app.js")) {
         file = "web/app.js"; type = "text/javascript; charset=utf-8";
+    } else if (!strcmp(path, "/favicon.svg")) {
+        file = "web/favicon.svg"; type = "image/svg+xml";
     } else {
         error_response(fd, 404, "Static path not allowed."); return;
     }
