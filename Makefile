@@ -6,7 +6,7 @@ SOURCES = src/server.c src/api.c src/playlist.c
 HEADERS = src/api.h src/playlist.h
 SANITIZERS = -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie -no-pie
 
-.PHONY: all test test-api sanitize clean
+.PHONY: all check test test-api test-browser sanitize clean
 all: build/musiclab
 
 build:
@@ -28,8 +28,17 @@ test: build/native build/musiclab
 	./build/native
 	node tests/api.mjs ./build/musiclab
 
+check: test
+	node --check web/app.js
+	node --check tests/browser.cjs
+	node --check tests/browser-run.cjs
+	node web/check.cjs
+
 test-api: build/musiclab
 	node tests/api.mjs ./build/musiclab
+
+test-browser: build/musiclab
+	node tests/browser-run.cjs
 
 sanitize: build/native-sanitize build/musiclab-sanitize
 	ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 ./build/native-sanitize
