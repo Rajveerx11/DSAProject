@@ -1,6 +1,6 @@
 # Shared API contract
 
-The local server listens on `127.0.0.1:8080` by default; run `./build/musiclab --port 8080` from the repository root. It serves `web/index.html`, `web/styles.css`, and `web/app.js`. No Python or runtime npm packages.
+The local server listens on `127.0.0.1:8080` by default; run `./build/musiclab --port 8080` from the repository root. It serves `web/index.html`, `web/styles.css`, `web/app.js`, and `web/favicon.svg`. No Python or runtime npm packages.
 
 ## State
 `GET /api/state` returns JSON. All successful mutations return the same shape with a fresh operation:
