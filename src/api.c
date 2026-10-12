@@ -199,7 +199,7 @@ static bool reset(App *app)
     Playlist fresh[2] = {{0}, {0}};
     for (size_t i = 0; i < 5; i++) {
         if (!playlist_add(&fresh[i < 3 ? 0 : 1], (uint32_t)(app->next_id + i),
-                          titles[i], "Demo tones")) {
+                          titles[i], "Sample artist")) {
             playlist_clear(&fresh[0]); playlist_clear(&fresh[1]);
             return false;
         }
@@ -207,8 +207,8 @@ static bool reset(App *app)
     app_clear(app);
     app->lists[0] = fresh[0]; app->lists[1] = fresh[1];
     app->next_id += 5;
-    app->operation = (Operation){.action = "reset", .message = "Restored generated-tone demo playlists with fresh IDs.",
-        .complexity = "O(n)", .steps = {"Free old nodes", "Append fresh demo nodes", "current = head in each list"}};
+    app->operation = (Operation){.action = "reset", .message = "Restored sample playlists with fresh IDs.",
+        .complexity = "O(n)", .steps = {"Allocate fresh sample nodes", "Free old nodes after allocation succeeds", "Replace playlists; current = head in each list"}};
     for (size_t i = 0; i < 2; i++)
         for (SongNode *n = app->lists[i].head; n; n = n->next) changed(&app->operation, n);
     /* Reset is a committed replacement, not a replay of fictitious instructions. */
@@ -372,9 +372,9 @@ int api_action(App *app, char *body, Response *out)
             op.action = "delete"; op.message = "Unlinked and freed the song node.";
             changed(&op, node); changed(&op, node->prev); changed(&op, node->next);
             op.steps[0] = "Search by ID";
-            op.steps[1] = node->prev ? "node.prev.next = node.next" : "head = node.next";
-            op.steps[2] = node->next ? "node.next.prev = node.prev" : "tail = node.prev";
-            op.steps[3] = list->current == node ? "current = next, else previous, else NULL" : "Keep current song";
+            op.steps[1] = list->current == node ? "current = next, else previous, else NULL" : "Keep current song";
+            op.steps[2] = node->prev ? "node.prev.next = node.next" : "head = node.next";
+            op.steps[3] = node->next ? "node.next.prev = node.prev" : "tail = node.prev";
             op.steps[4] = "Free node";
             playlist_delete_node(list, node);
         }
@@ -419,8 +419,8 @@ int api_action(App *app, char *body, Response *out)
                 op.steps[2] = "destination.tail = source.tail; keep current";
             } else {
                 op.steps[0] = "destination.head = source.head";
-                op.steps[1] = "destination.tail = source.tail";
-                op.steps[2] = "destination.current = source.current";
+                op.steps[1] = "destination.current = source.current";
+                op.steps[2] = "destination.tail = source.tail";
             }
             op.steps[3] = "Add source size; empty source endpoints and current";
             op.message = "Transferred source nodes without copying songs.";
