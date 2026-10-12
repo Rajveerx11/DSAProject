@@ -16,7 +16,24 @@ The local server listens on `127.0.0.1:8080` by default; run `./build/musiclab -
      ]},
     {"id":"secondary","name":"Side B","head":null,"tail":null,"current":null,"size":0,"nodes":[]}
   ],
-  "operation":{"action":"add","message":"Appended a node to the tail.","complexity":"O(1)","steps":["oldTail.next = newNode","newNode.prev = oldTail","tail = newNode"],"changed":[1,2]}
+  "operation":{
+    "action":"add","message":"Appended a node to the tail.","complexity":"O(1)",
+    "steps":["newNode.prev = oldTail","oldTail.next = newNode","tail = newNode"],"changed":[1,2],
+    "trace":{
+      "before":[
+        {"id":"main","name":"My playlist","head":1,"tail":1,"current":1,"size":1,
+         "nodes":[{"id":1,"title":"Paper Moon","artist":"Demo tones","prev":null,"next":null}]},
+        {"id":"secondary","name":"Side B","head":null,"tail":null,"current":null,"size":0,"nodes":[]}
+      ],
+      "events":[
+        {"kind":"allocate","playlist":"main","id":2,"title":"Slow Orbit","artist":"Demo tones","prev":null,"next":null},
+        {"kind":"pointer","playlist":"main","id":2,"field":"prev","from":null,"to":1},
+        {"kind":"pointer","playlist":"main","id":1,"field":"next","from":null,"to":2},
+        {"kind":"pointer","playlist":"main","id":null,"field":"tail","from":1,"to":2}
+      ],
+      "truncated":false
+    }
+  }
 }
 ```
 
@@ -33,8 +50,11 @@ IDs are positive integers, unique across the two lists for this process; they ar
 - `action=merge&playlist=main&source=secondary`: splice source onto destination in O(1), empty source, keep destination current unless destination was empty. Reject self-merge.
 - `action=reset`: restore small clearly labelled demo playlists. Generate fresh IDs rather than reusing removed IDs.
 
-Initial demo state: main has 3 songs, secondary has 2. Titles/artists are invented demo content, not claims of licensed music. Frontend provides clearly labelled generated demo tones and optionally browser-local audio files attached to song IDs; C handles node metadata and playlist order, not audio decoding or file uploads. Browser-local audio is lost on reload; server state is lost on restart.
+Initial demo state: main has 3 records, secondary has 2. Titles/artists are sample metadata only; this is a silent simulation with no audio or files. C handles node metadata and playlist order. Server state is lost on restart.
 
 Errors: appropriate HTTP 400/404/405/413/415 status, `{"ok":false,"error":"Human-readable reason"}`, no partial mutation. Reject invalid IDs, unsupported actions/playlist IDs, oversized bodies, duplicate fields, invalid percent escapes, decoded NUL/control characters, and extra action fields where practical. Static file serving uses a strict allowlist; bind loopback only. Require expected local Host and reject foreign Origin on POST; no permissive CORS. Serve CSP allowing only own scripts/styles plus blob media, no inline script/event handlers.
 
-UI contract: use returned server state, not JS arrays for playlist operations. Serialize requests/disable mutation controls while pending. Safe text rendering (`textContent`), accessible live operation feedback, reduced-motion equivalent, readable mobile list/visualizer. Controls: add, delete, select, next/previous, reverse, merge, reset, view toggle. Playback follows main's current node and stays consistent after deletion/selection/reversal.
+UI contract: a compact operation desk on the left and always-visible pointer canvas on the right. Use returned server state and recorded events, not independent JS playlist algorithms. Serialize requests/disable mutation buttons while pending. Safe text rendering (`textContent`), keyboard focus preservation, reduced-motion equivalent, and a stacked mobile layout. Controls: add, delete, select, next/previous, reverse, merge, reset; plus replay auto-play, pause/continue, previous/next step, replay, finish, and speed. A new action finishes old historical playback before requesting C; replay never resubmits the action.
+
+## Recorded operation trace
+Every successful state includes `operation.trace` with `before` (two copied C playlist snapshots), `events`, and `truncated`. See `SIMULATION.md` for event shapes. `allocate`, `visit`, `pointer`, and `free` events are emitted by actual DLL code. Numeric node IDs represent node pointer fields; `id:null` represents playlist head/tail/current fields. From/to use null for NULL. Initial/reset traces are empty explicit replacements with before equal to final state. Invalid requests preserve the previous trace. Capacity is 632 events and a 512 KiB response budget; allowed operations at 200 records are fully captured. Intermediate frames are historical allocation/field projections and may be cyclic or temporarily disconnected; final order/membership/size comes exclusively from top-level playlists.

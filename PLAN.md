@@ -1,15 +1,15 @@
 # Music Player & Doubly Linked List Lab — Delivery Plan
 
 ## Goal
-Build a polished, local music playlist manager for a second-year DSA demonstration. C owns every playlist node and pointer mutation; HTML/CSS/JavaScript provides playback controls and a toggleable live linked-list visualizer. No Python backend or JavaScript imitation of the linked list.
+Build a polished, local playlist simulator for a second-year DSA demonstration. C owns every node and pointer mutation; HTML/CSS/JavaScript provides an operation desk on the left and an always-visible C-recorded replay on the right. No Python backend, audio requirement, or JavaScript imitation of the linked list. `SIMULATION.md` defines the latest side-by-side acceptance and trace contract.
 
 ## Scope and architecture
 - C: `SongNode` with stable ID, title, artist, `prev`, and `next`; `Playlist` with `head`, `tail`, `current`, and size. Implement create/add, delete, select, next/previous, display, reverse, concatenate, and cleanup.
 - Maintain two playlists. Concatenation transfers nodes to the destination and empties the source without copying songs. Define current-song behaviour for empty lists, boundary navigation, and deletion.
 - A small loopback-only C HTTP server serves `web/` and an API. Bound input sizes, validate requests, escape JSON, allowlist static paths, and reject cross-origin mutations. Keep transport code separate from syllabus algorithms.
 - API: `GET /api/state`; `POST /api/action` with URL-encoded fields (`action`, `playlist`, and action-specific values). JSON responses carry authoritative state, node identifiers/links, operation explanation, and changed-node identifiers. Errors preserve state.
-- UI: responsive player, two playlists, labelled forms, keyboard-accessible controls, actual browser audio with clearly labelled local/demo sources, empty/loading/error states, and a DSA-view toggle.
-- Visualizer: display `NULL`, `head`, `tail`, `current`, node IDs, and bidirectional links. Animate returned operation changes; explain that these are logical identifiers, not memory addresses or a debugger stepping through C.
+- UI: responsive silent simulation, two playlists, labelled forms, keyboard-accessible controls, empty/loading/error states, left-side operations and right-side replay with pause/step/replay/finish/speed controls.
+- Visualizer: display `NULL`, `head`, `tail`, `current`, node IDs, directed SVG links and moving blocks. Capture actual C allocation/visit/pointer/free events with owned before snapshots; show each historical assignment and canonical final state. Explain logical IDs and committed replay, not live CPU debugging.
 - Style direction: a restrained record-deck lab, warm paper/ink palette, one vivid accent, readable type, purposeful pointer highlights, and reduced-motion support. No framework or runtime npm dependencies.
 - State is in memory for one local classroom session. No accounts, database, internet streaming, production deployment, or multi-user isolation.
 
@@ -26,7 +26,7 @@ Build a polished, local music playlist manager for a second-year DSA demonstrati
 7. Remove only task-created temporary worktrees and obsolete branches; prune references; leave a clean repository. Record exact verification and any genuine blocker.
 
 ## Acceptance and validation
-- Both UI sections stay synchronized with C's state for every operation.
+- Left collection shows committed C state; right replay shows labelled C-recorded intermediate history, then the same canonical final state. Replay never repeats the backend mutation.
 - Demonstrate add, middle/head/tail/current deletion, boundaries, reverse, concatenate, empty playlists, and long/escaped song names.
 - Verify `head->prev == NULL`, `tail->next == NULL`, reciprocal links, size, forward/backward traversal, and valid current pointer after each mutation.
 - Explain next/previous and append with tail: O(1); search/delete by ID and reverse: O(n); concatenate with maintained endpoints: O(1); stored nodes: O(n).

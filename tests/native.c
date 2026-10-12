@@ -139,9 +139,75 @@ static void text_bounds(void)
     playlist_clear(&list); valid(&list);
 }
 
+typedef struct {
+    SongNode *nodes[3];
+    PlaylistEvent events[32];
+    size_t count;
+} Observation;
+
+static void observe(void *context, const Playlist *list, const PlaylistEvent *event)
+{
+    Observation *observation = context;
+    assert(observation->count < 32);
+    observation->events[observation->count++] = *event;
+    if (event->kind == PLAYLIST_POINTER) {
+        const SongNode *target = NULL;
+        if (!event->id) {
+            if (event->field == POINTER_HEAD) target = list->head;
+            else if (event->field == POINTER_TAIL) target = list->tail;
+            else { assert(event->field == POINTER_CURRENT); target = list->current; }
+        } else {
+            SongNode *owner = NULL;
+            for (size_t i = 0; i < 3; i++)
+                if (observation->nodes[i] && observation->nodes[i]->id == event->id)
+                    owner = observation->nodes[i];
+            assert(owner);
+            assert(event->field == POINTER_PREV || event->field == POINTER_NEXT);
+            target = event->field == POINTER_PREV ? owner->prev : owner->next;
+        }
+        /* Callback is at the real assignment, not generated from final state. */
+        assert(event->to == (target ? target->id : 0));
+    } else if (event->kind == PLAYLIST_FREE) {
+        bool live = false;
+        for (size_t i = 0; i < 3; i++) {
+            SongNode *node = observation->nodes[i];
+            if (node && node->id == event->id) {
+                assert(list->current != node);
+                observation->nodes[i] = NULL;
+                live = true;
+            }
+        }
+        assert(live); /* Free callback ran while ID was still readable. */
+    }
+}
+
+static void observers(void)
+{
+    Playlist list = {0};
+    Observation observation = {0};
+    for (uint32_t i = 0; i < 3; i++) observation.nodes[i] = add(&list, i + 1);
+    assert(!list.observer && !list.observer_context);
+    list.observer = observe; list.observer_context = &observation;
+    assert(playlist_select(&list, 2));
+    assert(observation.count == 3);
+    assert(observation.events[0].kind == PLAYLIST_VISIT && observation.events[0].id == 1);
+    assert(observation.events[1].kind == PLAYLIST_VISIT && observation.events[1].id == 2);
+    assert(observation.events[2].kind == PLAYLIST_POINTER);
+    observation.count = 0;
+    playlist_reverse(&list); valid(&list);
+    assert(observation.count == 8);
+    assert(playlist_delete(&list, 2)); valid(&list);
+    assert(observation.count == 14);
+    assert(observation.events[8].kind == PLAYLIST_VISIT && observation.events[8].id == 3);
+    assert(observation.events[9].kind == PLAYLIST_VISIT && observation.events[9].id == 2);
+    assert(observation.events[13].kind == PLAYLIST_FREE && observation.events[13].id == 2);
+    playlist_clear(&list); valid(&list);
+    list.observer = NULL; list.observer_context = NULL;
+}
+
 int main(void)
 {
-    removals(); reverse_and_move(); merges(); text_bounds();
-    puts("native: PASS (removals, navigation, reverse, merge, UTF-8, bounds, invariants, cleanup)");
+    removals(); reverse_and_move(); merges(); text_bounds(); observers();
+    puts("native: PASS (removals, navigation, reverse, merge, UTF-8, bounds, invariants, cleanup, synchronous observers)");
     return 0;
 }

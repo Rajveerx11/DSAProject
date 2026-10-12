@@ -29,10 +29,115 @@ static void json_string(Response *out, const char *text)
     writef(out, "\"");
 }
 
-static void json_pointer(Response *out, const SongNode *node)
+static uint32_t node_id(const SongNode *node) { return node ? node->id : 0; }
+
+static void json_id(Response *out, uint32_t id)
 {
-    if (node) writef(out, "%" PRIu32, node->id);
+    if (id) writef(out, "%" PRIu32, id);
     else writef(out, "null");
+}
+
+static void json_song(Response *out, uint32_t id, const char *title,
+                      const char *artist, uint32_t prev, uint32_t next)
+{
+    writef(out, "{\"id\":%" PRIu32 ",\"title\":", id);
+    json_string(out, title);
+    writef(out, ",\"artist\":"); json_string(out, artist);
+    writef(out, ",\"prev\":"); json_id(out, prev);
+    writef(out, ",\"next\":"); json_id(out, next);
+    writef(out, "}");
+}
+
+static void json_list(Response *out, size_t index, uint32_t head,
+                      uint32_t tail, uint32_t current, size_t size)
+{
+    writef(out, "%s{\"id\":\"%s\",\"name\":\"%s\",\"head\":",
+           index ? "," : "", index ? "secondary" : "main",
+           index ? "Side B" : "My playlist");
+    json_id(out, head);
+    writef(out, ",\"tail\":"); json_id(out, tail);
+    writef(out, ",\"current\":"); json_id(out, current);
+    writef(out, ",\"size\":%zu,\"nodes\":[", size);
+}
+
+static void snapshot(const App *app, OperationTrace *trace)
+{
+    for (size_t i = 0; i < 2; i++) {
+        const Playlist *list = &app->lists[i];
+        PlaylistSnapshot *copy = &trace->before[i];
+        copy->head = node_id(list->head); copy->tail = node_id(list->tail);
+        copy->current = node_id(list->current); copy->size = list->size;
+        size_t j = 0;
+        for (const SongNode *node = list->head; node; node = node->next) {
+            SongSnapshot *song = &copy->nodes[j++];
+            *song = (SongSnapshot){.id = node->id, .prev = node_id(node->prev),
+                                   .next = node_id(node->next)};
+            strcpy(song->title, node->title); strcpy(song->artist, node->artist);
+        }
+    }
+}
+
+typedef struct { App *app; OperationTrace *trace; } Capture;
+
+static void record(void *context, const Playlist *list, const PlaylistEvent *event)
+{
+    Capture *capture = context;
+    OperationTrace *trace = capture->trace;
+    if (trace->count == TRACE_EVENT_LIMIT) { trace->truncated = true; return; }
+    trace->events[trace->count].event = *event;
+    trace->events[trace->count++].playlist = list == &capture->app->lists[1];
+}
+
+static void capture_begin(App *app, OperationTrace *trace, Capture *capture)
+{
+    snapshot(app, trace);
+    *capture = (Capture){app, trace};
+    for (size_t i = 0; i < 2; i++) {
+        app->lists[i].observer = record;
+        app->lists[i].observer_context = capture;
+    }
+}
+
+static void capture_end(App *app)
+{
+    for (size_t i = 0; i < 2; i++) {
+        app->lists[i].observer = NULL;
+        app->lists[i].observer_context = NULL;
+    }
+}
+
+static void json_trace(Response *out, const OperationTrace *trace)
+{
+    static const char *kinds[] = {"allocate", "visit", "pointer", "free"};
+    static const char *pointers[] = {"prev", "next", "head", "tail", "current"};
+    writef(out, ",\"trace\":{\"before\":[");
+    for (size_t i = 0; i < 2; i++) {
+        const PlaylistSnapshot *list = &trace->before[i];
+        json_list(out, i, list->head, list->tail, list->current, list->size);
+        for (size_t j = 0; j < list->size; j++) {
+            const SongSnapshot *node = &list->nodes[j];
+            writef(out, "%s", j ? "," : "");
+            json_song(out, node->id, node->title, node->artist, node->prev, node->next);
+        }
+        writef(out, "]}");
+    }
+    writef(out, "],\"events\":[");
+    for (size_t i = 0; i < trace->count; i++) {
+        const PlaylistEvent *event = &trace->events[i].event;
+        writef(out, "%s{\"kind\":\"%s\",\"playlist\":\"%s\",\"id\":", i ? "," : "",
+               kinds[event->kind], trace->events[i].playlist ? "secondary" : "main");
+        json_id(out, event->id);
+        if (event->kind == PLAYLIST_POINTER) {
+            writef(out, ",\"field\":\"%s\",\"from\":", pointers[event->field]);
+            json_id(out, event->from); writef(out, ",\"to\":"); json_id(out, event->to);
+        } else if (event->kind == PLAYLIST_ALLOCATE) {
+            writef(out, ",\"title\":"); json_string(out, event->title);
+            writef(out, ",\"artist\":"); json_string(out, event->artist);
+            writef(out, ",\"prev\":null,\"next\":null");
+        }
+        writef(out, "}");
+    }
+    writef(out, "],\"truncated\":%s}", trace->truncated ? "true" : "false");
 }
 
 void api_error(Response *out, const char *message)
@@ -51,21 +156,13 @@ void api_state(const App *app, Response *out)
     writef(out, "{\"ok\":true,\"playlists\":[");
     for (size_t i = 0; i < 2; i++) {
         const Playlist *list = &app->lists[i];
-        writef(out, "%s{\"id\":\"%s\",\"name\":\"%s\",\"head\":",
-               i ? "," : "", i ? "secondary" : "main",
-               i ? "Side B" : "My playlist");
-        json_pointer(out, list->head);
-        writef(out, ",\"tail\":"); json_pointer(out, list->tail);
-        writef(out, ",\"current\":"); json_pointer(out, list->current);
-        writef(out, ",\"size\":%zu,\"nodes\":[", list->size);
+        json_list(out, i, node_id(list->head), node_id(list->tail),
+                  node_id(list->current), list->size);
         bool first = true;
         for (SongNode *node = list->head; node; node = node->next) {
-            writef(out, "%s{\"id\":%" PRIu32 ",\"title\":", first ? "" : ",", node->id);
-            json_string(out, node->title);
-            writef(out, ",\"artist\":"); json_string(out, node->artist);
-            writef(out, ",\"prev\":"); json_pointer(out, node->prev);
-            writef(out, ",\"next\":"); json_pointer(out, node->next);
-            writef(out, "}");
+            writef(out, "%s", first ? "" : ",");
+            json_song(out, node->id, node->title, node->artist,
+                      node_id(node->prev), node_id(node->next));
             first = false;
         }
         writef(out, "]}");
@@ -81,7 +178,9 @@ void api_state(const App *app, Response *out)
     writef(out, "],\"changed\":[");
     for (size_t i = 0; i < op->count; i++)
         writef(out, "%s%" PRIu32, i ? "," : "", op->changed[i]);
-    writef(out, "]}}");
+    writef(out, "]");
+    json_trace(out, &op->trace);
+    writef(out, "}}");
 }
 
 static void changed(Operation *op, const SongNode *node)
@@ -100,7 +199,7 @@ static bool reset(App *app)
     Playlist fresh[2] = {{0}, {0}};
     for (size_t i = 0; i < 5; i++) {
         if (!playlist_add(&fresh[i < 3 ? 0 : 1], (uint32_t)(app->next_id + i),
-                          titles[i], "Demo tones")) {
+                          titles[i], "Sample artist")) {
             playlist_clear(&fresh[0]); playlist_clear(&fresh[1]);
             return false;
         }
@@ -108,10 +207,12 @@ static bool reset(App *app)
     app_clear(app);
     app->lists[0] = fresh[0]; app->lists[1] = fresh[1];
     app->next_id += 5;
-    app->operation = (Operation){.action = "reset", .message = "Restored generated-tone demo playlists with fresh IDs.",
-        .complexity = "O(n)", .steps = {"Free old nodes", "Append fresh demo nodes", "current = head in each list"}};
+    app->operation = (Operation){.action = "reset", .message = "Restored sample playlists with fresh IDs.",
+        .complexity = "O(n)", .steps = {"Allocate fresh sample nodes", "Free old nodes after allocation succeeds", "Replace playlists; current = head in each list"}};
     for (size_t i = 0; i < 2; i++)
         for (SongNode *n = app->lists[i].head; n; n = n->next) changed(&app->operation, n);
+    /* Reset is a committed replacement, not a replay of fictitious instructions. */
+    snapshot(app, &app->operation.trace);
     return true;
 }
 
@@ -223,6 +324,7 @@ int api_action(App *app, char *body, Response *out)
     if (index < 0) return fail(out, 400, "Unknown or missing playlist.");
     Playlist *list = &app->lists[index];
     Operation op = {0};
+    Capture capture;
     if (!strcmp(action, "add")) {
         const char *title = value(form, count, "title"), *artist = value(form, count, "artist");
         char clean_title[SONG_TEXT_BYTES + 1], clean_artist[SONG_TEXT_BYTES + 1];
@@ -234,8 +336,12 @@ int api_action(App *app, char *body, Response *out)
         op = (Operation){.action = "add", .message = "Appended a node to the tail.", .complexity = "O(1)"};
         changed(&op, list->tail);
         bool empty = !list->head;
+        capture_begin(app, &op.trace, &capture);
         SongNode *node = playlist_add(list, (uint32_t)app->next_id, clean_title, clean_artist);
-        if (!node) return fail(out, 500, "Cannot allocate song node.");
+        if (!node) {
+            capture_end(app);
+            return fail(out, 500, "Cannot allocate song node.");
+        }
         app->next_id++;
         changed(&op, node);
         if (empty) {
@@ -250,28 +356,34 @@ int api_action(App *app, char *body, Response *out)
         uint32_t id;
         if (count != 3 || !parse_id(value(form, count, "id"), &id))
             return fail(out, 400, "Expected a positive integer song ID and no extra fields.");
+        capture_begin(app, &op.trace, &capture);
         SongNode *node = playlist_find(list, id);
-        if (!node) return fail(out, 404, "Song ID not in this playlist.");
+        if (!node) {
+            capture_end(app);
+            return fail(out, 404, "Song ID not in this playlist.");
+        }
+        op.complexity = "O(n)";
         if (!strcmp(action, "select")) {
-            op = (Operation){.action = "select", .message = "Selected the existing node.", .complexity = "O(n)",
-                .steps = {"Search by ID", "current = foundNode"}};
+            op.action = "select"; op.message = "Selected the existing node.";
+            op.steps[0] = "Search by ID"; op.steps[1] = "current = foundNode";
             changed(&op, list->current); changed(&op, node);
-            (void)playlist_select(list, id);
+            playlist_select_node(list, node);
         } else {
-            op = (Operation){.action = "delete", .message = "Unlinked and freed the song node.", .complexity = "O(n)"};
+            op.action = "delete"; op.message = "Unlinked and freed the song node.";
             changed(&op, node); changed(&op, node->prev); changed(&op, node->next);
             op.steps[0] = "Search by ID";
-            op.steps[1] = node->prev ? "node.prev.next = node.next" : "head = node.next";
-            op.steps[2] = node->next ? "node.next.prev = node.prev" : "tail = node.prev";
-            op.steps[3] = list->current == node ? "current = next, else previous, else NULL" : "Keep current song";
+            op.steps[1] = list->current == node ? "current = next, else previous, else NULL" : "Keep current song";
+            op.steps[2] = node->prev ? "node.prev.next = node.next" : "head = node.next";
+            op.steps[3] = node->next ? "node.next.prev = node.prev" : "tail = node.prev";
             op.steps[4] = "Free node";
-            (void)playlist_delete(list, id);
+            playlist_delete_node(list, node);
         }
     } else if (!strcmp(action, "next") || !strcmp(action, "previous")) {
         if (count != 2) return fail(out, 400, "Navigation accepts only action and playlist.");
         bool forward = !strcmp(action, "next");
         op = (Operation){.action = forward ? "next" : "previous", .complexity = "O(1)"};
         SongNode *old = list->current;
+        capture_begin(app, &op.trace, &capture);
         if (playlist_move(list, forward)) {
             op.message = "Moved current to the adjacent song.";
             op.steps[0] = forward ? "current = current.next" : "current = current.prev";
@@ -287,6 +399,7 @@ int api_action(App *app, char *body, Response *out)
         /* Traversal visits unique nodes; no duplicate scan is needed here. */
         for (SongNode *node = list->head; node; node = node->next)
             op.changed[op.count++] = node->id;
+        capture_begin(app, &op.trace, &capture);
         playlist_reverse(list);
     } else if (!strcmp(action, "merge")) {
         int source = list_index(value(form, count, "source"));
@@ -306,16 +419,21 @@ int api_action(App *app, char *body, Response *out)
                 op.steps[2] = "destination.tail = source.tail; keep current";
             } else {
                 op.steps[0] = "destination.head = source.head";
-                op.steps[1] = "destination.tail = source.tail";
-                op.steps[2] = "destination.current = source.current";
+                op.steps[1] = "destination.current = source.current";
+                op.steps[2] = "destination.tail = source.tail";
             }
             op.steps[3] = "Add source size; empty source endpoints and current";
             op.message = "Transferred source nodes without copying songs.";
         }
-        (void)playlist_merge(list, other);
+        capture_begin(app, &op.trace, &capture);
+        if (!playlist_merge(list, other)) {
+            capture_end(app);
+            return fail(out, 400, "Maximum 200 songs across both playlists.");
+        }
     } else {
         return fail(out, 400, "Unsupported action.");
     }
+    capture_end(app);
     app->operation = op;
     api_state(app, out);
     return 200;
