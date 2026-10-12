@@ -1,8 +1,8 @@
 'use strict';
-// Run: node web/check.cjs. Fixtures test validation only; the UI never substitutes C state.
+// Run: node web/check.cjs. All snapshots/events below are UNIT fixtures, never runtime C substitutes.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const { trimSongText, textProblem, pointer, validateState, makeDemoWav } = require('./app.js');
+const { trimSongText, textProblem, pointer, validateState, projectTrace, eventLabel, shouldAutoPlay, TRACE_LIMIT } = require('./app.js');
 
 assert.equal(textProblem('  A record  '), '');
 assert.equal(textProblem('a'.repeat(127)), '');
@@ -14,35 +14,37 @@ assert.notEqual(textProblem('🎵'.repeat(32)), '');
 assert.notEqual(textProblem(' \n '), '');
 assert.notEqual(textProblem('side\u0000b'), '');
 assert.notEqual(textProblem('side\tb'), '');
+assert.notEqual(textProblem('bad\ud800'), '');
+assert.notEqual(textProblem('\udfff'), '');
 assert.equal(textProblem('<img src=x onerror=alert(1)> & "record"'), '');
 assert.equal(trimSongText('  A record  '), 'A record');
 for (const whitespace of ['\u00a0', '\u2003', '\ufeff', '\u2028', '\u2029']) {
   assert.equal(trimSongText(` ${whitespace} `), whitespace, 'Only ASCII spaces are trimmed');
   assert.equal(textProblem(whitespace), '', 'Match metadata accepted by C');
 }
-for (let cp = 0x7f; cp <= 0x9f; cp++) {
-  assert.notEqual(textProblem(`A${String.fromCodePoint(cp)}B`), '', 'Reject all C1 controls like C');
-}
+for (let cp = 0x7f; cp <= 0x9f; cp++) assert.notEqual(textProblem(`A${String.fromCodePoint(cp)}B`), '', 'Reject C1 controls like C');
 assert.equal(pointer(null), 'NULL');
 assert.equal(pointer(9), '#9');
 
-const snapshot = {
-  ok: true,
-  playlists: [
-    { id: 'main', name: 'My playlist', head: 1, tail: 2, current: 1, size: 2,
-      nodes: [{ id: 1, title: 'Paper Moon', artist: 'Demo tones', prev: null, next: 2 },
-        { id: 2, title: 'Slow Orbit', artist: 'Demo tones', prev: 1, next: null }] },
-    { id: 'secondary', name: 'Side B', head: null, tail: null, current: null, size: 0, nodes: [] }
-  ],
-  operation: { action: 'add', message: 'Appended a node.', complexity: 'O(1)', steps: ['tail = newNode'], changed: [1, 2] }
-};
+function list(id, ids, current = ids[0] ?? null) {
+  return { id, name: id === 'main' ? 'My playlist' : 'Side B', head: ids[0] ?? null, tail: ids.at(-1) ?? null, current, size: ids.length,
+    nodes: ids.map((nodeId, i) => ({ id: nodeId, title: `Track ${nodeId}`, artist: 'Sample metadata', prev: ids[i - 1] ?? null, next: ids[i + 1] ?? null })) };
+}
+const base = [list('main', [1, 2, 3]), list('secondary', [4, 5])];
+const write = (id, field, from, to, playlist = 'main') => ({ kind: 'pointer', playlist, id, field, from, to });
+const visit = id => ({ kind: 'visit', playlist: 'main', id });
+function fixture(action, before = base, after = base, events = [], truncated = false) {
+  return { ok: true, playlists: structuredClone(after), operation: { action, message: 'Unit fixture only', complexity: 'O(n)', steps: ['Recorded explanation'], changed: [], trace: { before: structuredClone(before), events: structuredClone(events), truncated } } };
+}
+const snapshot = fixture('reset');
 const original = JSON.stringify(snapshot);
 assert.equal(validateState(snapshot), snapshot);
-assert.equal(JSON.stringify(snapshot), original, 'Reading state must not mutate it');
-for (const title of ['\u00a0', '\u2003', '\ufeff', '\u2028', '\u2029', 'A\u00a0B']) {
-  const unicodeSnapshot = structuredClone(snapshot);
-  unicodeSnapshot.playlists[0].nodes[0].title = title;
-  assert.equal(validateState(unicodeSnapshot), unicodeSnapshot, 'Accepted C metadata must remain renderable');
+assert.equal(JSON.stringify(snapshot), original, 'Validation never mutates source snapshots');
+for (const text of ['\u00a0', '\u2003', '\ufeff', '\u2028', '\u2029', 'A\u00a0B', '<img src=x onerror=alert(1)>']) {
+  const unicode = structuredClone(snapshot);
+  unicode.playlists[0].nodes[0].title = text;
+  unicode.operation.trace.before[0].nodes[0].title = text;
+  assert.equal(validateState(unicode), unicode);
 }
 for (const damage of [
   s => { s.playlists[0].nodes[0].next = null; },
@@ -55,7 +57,14 @@ for (const damage of [
   s => { s.playlists[1].current = 1; },
   s => { s.playlists[1].id = 'main'; },
   s => { s.operation.changed = [null]; },
-  s => { s.playlists[0].nodes[0].title = 'é'.repeat(64); }
+  s => { s.playlists[0].nodes[0].title = 'é'.repeat(64); },
+  s => { s.playlists[0].nodes[0].id = 0x100000000; },
+  s => { delete s.operation.trace; },
+  s => { s.operation.trace.truncated = 'false'; },
+  s => { s.operation.trace.before[0].nodes[0].next = null; },
+  s => { s.operation.trace.before.pop(); },
+  s => { s.operation.trace.events = Array(TRACE_LIMIT + 1).fill(visit(1)); },
+  s => { s.operation.message = 'x'.repeat(512 * 1024); }
 ]) {
   const broken = JSON.parse(original);
   damage(broken);
@@ -63,42 +72,129 @@ for (const damage of [
 }
 assert.throws(() => validateState(null), /invalid state/);
 assert.throws(() => validateState({ ok: false, error: 'Not a snapshot' }), /invalid state/);
-const empty = JSON.parse(original);
-empty.playlists[0] = { id: 'main', name: 'My playlist', head: null, tail: null, current: null, size: 0, nodes: [] };
+const empty = fixture('reset', [list('main', []), list('secondary', [])], [list('main', []), list('secondary', [])]);
 assert.equal(validateState(empty), empty);
-const reversed = JSON.parse(original);
-reversed.playlists[0].nodes = [
-  { ...snapshot.playlists[0].nodes[1], prev: null, next: 1 },
-  { ...snapshot.playlists[0].nodes[0], prev: 2, next: null }
-];
-reversed.playlists[0].head = 2;
-reversed.playlists[0].tail = 1;
-assert.equal(validateState(reversed).playlists[0].current, 1);
 
-const wav = makeDemoWav(1);
-const view = new DataView(wav);
-const word = offset => String.fromCharCode(...new Uint8Array(wav, offset, 4));
-assert.equal(word(0), 'RIFF');
-assert.equal(word(8), 'WAVE');
-assert.equal(word(36), 'data');
-assert.equal(view.getUint16(20, true), 1, 'Uncompressed PCM');
-assert.equal(view.getUint16(22, true), 1, 'Mono');
-assert.equal(view.getUint16(34, true), 16, '16 bit');
-assert.equal(view.getUint32(24, true), 22050);
-assert.equal(view.getUint32(40, true), 12 * 22050 * 2);
-assert.equal(view.getUint32(4, true) + 8, wav.byteLength);
-let peak = 0;
-for (let i = 44; i < wav.byteLength; i += 2) peak = Math.max(peak, Math.abs(view.getInt16(i, true)));
-assert(peak > 0 && peak < 10000, 'Audible but quiet tone');
-assert.notDeepEqual(new Uint8Array(makeDemoWav(2)), new Uint8Array(wav), 'Different node IDs produce different demos');
+const addEvents = [
+  { kind: 'allocate', playlist: 'main', id: 6, title: 'Track 6', artist: 'Sample metadata', prev: null, next: null },
+  write(6, 'prev', null, 3), write(3, 'next', null, 6), write(null, 'tail', 3, 6)
+];
+const add = fixture('add', base, [list('main', [1, 2, 3, 6]), base[1]], addEvents);
+assert.equal(validateState(add), add);
+assert(!projectTrace(add, 0).nodes.has(6), 'Frame zero uses C before, never browser last state');
+assert.equal(projectTrace(add, 1).nodes.get(6).prev, null, 'Allocation appears before linking');
+assert.equal(projectTrace(add, 2).nodes.get(6).prev, 3);
+assert.equal(projectTrace(add, 2).nodes.get(3).next, null, 'Intermediate assignments are not coerced into a valid list');
+assert.equal(projectTrace(add, 3).nodes.get(3).next, 6);
+assert.equal(projectTrace(add, 3).lists.get('main').tail, 3, 'Tail not moved before its actual write');
+assert.equal(projectTrace(add, 4).lists.get('main').tail, 6);
+assert.equal(projectTrace(add, 5).final, true);
+assert.equal(projectTrace(add, 5).lists.get('main').size, 4);
+assert.equal(projectTrace(add, 5).writes, 3);
+assert.throws(() => projectTrace(add, -1), RangeError);
+assert.throws(() => projectTrace(add, 6), RangeError);
+
+const remove = fixture('delete', base, [list('main', [1, 3]), base[1]], [visit(1), visit(2), write(1, 'next', 2, 3), write(3, 'prev', 2, 1), { kind: 'free', playlist: 'main', id: 2 }]);
+validateState(remove);
+assert.equal(projectTrace(remove, 1).event.id, 1);
+assert.equal(projectTrace(remove, 2).event.id, 2);
+assert.equal(projectTrace(remove, 2).visits, 2);
+assert.equal(projectTrace(remove, 3).nodes.get(3).prev, 2);
+assert.equal(projectTrace(remove, 5).ghost.id, 2);
+assert(!projectTrace(remove, 5).nodes.has(2));
+assert.equal(projectTrace(remove, 6).ghost, null);
+const navigation = fixture('next', base, [list('main', [1, 2, 3], 2), base[1]], [write(null, 'current', 1, 2)]);
+validateState(navigation);
+assert.equal(projectTrace(navigation, 0).lists.get('main').current, 1);
+assert.equal(projectTrace(navigation, 1).lists.get('main').current, 2);
+const emptyLists = [list('main', []), list('secondary', [])];
+const firstAdd = fixture('add', emptyLists, [list('main', [6]), emptyLists[1]], [addEvents[0], write(6, 'prev', null, null), write(null, 'head', null, 6), write(null, 'tail', null, 6), write(null, 'current', null, 6)]);
+validateState(firstAdd);
+assert.equal(projectTrace(firstAdd, 4).lists.get('main').current, null, 'No-op assignments and delayed current are faithfully recorded');
+assert.equal(projectTrace(firstAdd, 5).lists.get('main').current, 6);
+const singleton = [list('main', [1]), emptyLists[1]];
+const lastDelete = fixture('delete', singleton, emptyLists, [visit(1), write(null, 'current', 1, null), write(null, 'head', 1, null), write(null, 'tail', 1, null), { kind: 'free', playlist: 'main', id: 1 }]);
+validateState(lastDelete);
+assert.equal(projectTrace(lastDelete, 2).lists.get('main').head, 1);
+assert.equal(projectTrace(lastDelete, 6).nodes.size, 0);
+
+const reverseEvents = [write(1, 'next', 2, null), write(1, 'prev', null, 2), write(2, 'next', 3, 1), write(2, 'prev', 1, 3), write(3, 'next', null, 2), write(3, 'prev', 2, null), write(null, 'head', 1, 3), write(null, 'tail', 3, 1)];
+const reverse = fixture('reverse', base, [list('main', [3, 2, 1], 1), base[1]], reverseEvents);
+validateState(reverse);
+assert.deepEqual(projectTrace(reverse, 6).lists.get('main').order, [1, 2, 3], 'Do not implement a JS reverse algorithm');
+assert.equal(projectTrace(reverse, 2).nodes.get(1).prev, 2);
+assert.equal(projectTrace(reverse, 2).nodes.get(2).prev, 1, 'Intermediate cycle is valid recorded history');
+assert.deepEqual(projectTrace(reverse, 9).lists.get('main').order, [3, 2, 1]);
+assert.equal(projectTrace(reverse, 9).lists.get('main').current, 1);
+const mergeEvents = [write(3, 'next', null, 4), write(4, 'prev', null, 3, 'secondary'), write(null, 'tail', 3, 5), write(null, 'head', 4, null, 'secondary'), write(null, 'tail', 5, null, 'secondary'), write(null, 'current', 4, null, 'secondary')];
+const merge = fixture('merge', base, [list('main', [1, 2, 3, 4, 5]), list('secondary', [])], mergeEvents);
+validateState(merge);
+assert.equal(projectTrace(merge, 1).nodes.get(3).next, 4, 'Cross-list link is displayed immediately');
+assert.equal(projectTrace(merge, 1).nodes.get(4).prev, null);
+assert.deepEqual(projectTrace(merge, 6).lists.get('secondary').order, [4, 5], 'Records remain independent of potentially invalid traversal');
+assert.deepEqual(projectTrace(merge, 7).lists.get('main').order, [1, 2, 3, 4, 5]);
+assert.deepEqual(projectTrace(merge, 7).lists.get('secondary').order, []);
+for (const sample of [add, remove, navigation, reverse, merge]) {
+  const saved = JSON.stringify(sample);
+  for (let frame = 0; frame <= sample.operation.trace.events.length + 1; frame++) projectTrace(sample, frame);
+  assert.equal(JSON.stringify(sample), saved, 'Projection does not mutate C records');
+}
+for (const events of [
+  [{ kind: 'visit', playlist: 'wrong', id: 1 }],
+  [{ kind: 'unknown', playlist: 'main', id: 1 }],
+  [visit(99)],
+  [{ kind: 'free', playlist: 'main', id: 99 }],
+  [write(1, 'next', 99, 3)],
+  [write(1, 'next', 2, 99)],
+  [write(99, 'prev', null, 1)],
+  [write(1, 'head', 1, 2)],
+  [write(null, 'prev', null, 1)],
+  [write(1, 'next', 2, 3), write(1, 'next', 2, 3)],
+  [write(1, 'next', 2, 3)], // final parity is missing
+  [{ ...addEvents[0], id: 1 }],
+  [{ ...addEvents[0], title: '\ud800' }],
+  [{ ...addEvents[0], prev: 99 }],
+  [{ kind: 'free', playlist: 'main', id: 1 }, visit(1)],
+  [{ kind: 'free', playlist: 'main', id: 1 }, write(2, 'prev', 1, 1)]
+]) assert.throws(() => validateState(fixture('broken', base, base, events)), /invalid state/);
+assert.throws(() => validateState(fixture('reset', base, [list('main', [6]), list('secondary', [])])), /invalid state/, 'Reset may replace state only with an honest before=after empty trace');
+const truncated = fixture('reverse', base, reverse.playlists, reverseEvents.slice(0, 1), true);
+validateState(truncated);
+assert.equal(projectTrace(truncated, 1).nodes.get(1).next, null);
+assert.deepEqual(projectTrace(truncated, 2).lists.get('main').order, [3, 2, 1], 'Missing events never fabricated; final C snapshot wins');
+const full = [list('main', Array.from({ length: 200 }, (_, i) => i + 1)), list('secondary', [])];
+validateState(fixture('reset', full, full));
+const longTrace = fixture('select', full, full, Array.from({ length: 650 }, (_, i) => visit(i % 200 + 1)));
+validateState(longTrace);
+assert.equal(projectTrace(longTrace, 650).visits, 650, 'Long recorded traces remain manually inspectable');
+assert.equal(projectTrace(longTrace, 651).visits, 650);
+assert.throws(() => validateState(fixture('reset', [full[0], list('secondary', [201])], [full[0], list('secondary', [201])])), /invalid state/);
+assert.equal(shouldAutoPlay(1, false, true), true);
+assert.equal(shouldAutoPlay(80, false, true), true);
+assert.equal(shouldAutoPlay(81, false, true), false);
+assert.equal(shouldAutoPlay(650, false, true), false);
+assert.equal(shouldAutoPlay(1, true, true), false);
+assert.equal(shouldAutoPlay(1, false, false), false);
+assert.equal(shouldAutoPlay(0, false, true), false);
+assert.equal(eventLabel(write(6, 'prev', null, 3)), '#6.prev: NULL → #3');
 
 const html = fs.readFileSync(`${__dirname}/index.html`, 'utf8');
 const js = fs.readFileSync(`${__dirname}/app.js`, 'utf8');
+const css = fs.readFileSync(`${__dirname}/styles.css`, 'utf8');
 assert(!/\son\w+=/i.test(html), 'No inline event handlers');
 assert(!/<script(?![^>]*\bsrc=)/i.test(html), 'No inline scripts');
 assert(!/\sstyle=/i.test(html), 'No inline styles');
 assert(!/innerHTML|insertAdjacentHTML/.test(js), 'User strings use textContent');
-assert(!/https?:\/\/|data:/i.test(html), 'No internet or data assets');
+assert(!/https?:\/\/|data:/i.test(html), 'No remote or data assets');
+assert(!/<audio|type="file"|id="volume"|id="seek"|lab-toggle/.test(html), 'No audio/file controls or mandatory lab toggle');
+assert(!/makeDemoWav|localSource|localAudio|createObjectURL/.test(js), 'Audio implementation removed');
 assert(js.includes("'Content-Type': 'application/x-www-form-urlencoded'"));
 assert(js.includes('new URLSearchParams(fields)'));
-console.log('PASS: UTF-8 limits, snapshot invariants/empty/reverse, quiet 12s PCM WAV, safe rendering and form encoding.');
+assert(js.includes('getTotalLength()') && js.includes('strokeDashoffset'), 'Pointer assignments visibly redraw arrows');
+assert(js.includes('node.animate(') && js.includes('old.x - now.x'), 'Native FLIP geometry, no runtime dependency');
+assert(css.includes('grid-template-columns:330px minmax(0,1fr)') && css.includes('position:sticky'), 'Compact desktop desk and sticky canvas');
+const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
+assert.equal(new Set(ids).size, ids.length, 'DOM IDs unique');
+for (const id of ['next', 'previous', 'reset', 'refresh', 'add-submit', 'title', 'artist', 'destination', 'main-tracks', 'secondary-tracks', 'diagrams', 'operation-message', 'replay-auto', 'replay-pause', 'replay-previous', 'replay-next', 'replay-replay', 'replay-finish', 'replay-speed']) assert(ids.includes(id), `Accessible control ${id} exists`);
+assert(!/<section id="pointer-lab"[^>]*\bhidden/.test(html), 'Lab visible by default');
+console.log('PASS: exact UTF-8 policy, snapshot/trace bounds, chronological allocation/visit/write/free projection, cyclic intermediate reverse, cross-list merge, before/after parity, truncation, large/reduced-motion autoplay policy, safe rendering, silent controls and form encoding. Unit fixtures only; real C/browser integration belongs to manager.');
