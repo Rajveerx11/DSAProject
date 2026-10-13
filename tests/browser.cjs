@@ -10,7 +10,7 @@ const { projectTrace, makeDemoWav } = require(path.join(root, 'web/app.js'));
   const url = process.env.MUSICLAB_URL || 'http://127.0.0.1:18080';
   const output = process.env.MUSICLAB_EVIDENCE || '/tmp/musiclab-simulator-evidence';
   fs.mkdirSync(output, { recursive: true });
-  const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH || undefined, args: ['--no-sandbox'] });
+  const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH || undefined, args: ['--no-sandbox'], ignoreDefaultArgs: ['--disable-back-forward-cache'] });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const page = await context.newPage();
   const errors = [];
@@ -105,7 +105,14 @@ const { projectTrace, makeDemoWav } = require(path.join(root, 'web/app.js'));
       await page.waitForFunction(()=>{const audio=document.getElementById('audio');return !audio.paused&&audio.currentTime>.15&&audio.readyState>=2;});
       assert.equal(await page.locator('#play-pause').getAttribute('aria-pressed'),'true');
     };
+    await operation(page.locator('#reset'),'reset');
     await playAudio();
+    const refreshBefore=await page.locator('#audio').evaluate(audio=>({src:audio.src,time:audio.currentTime}));
+    const refreshed=page.waitForResponse(response=>response.url()===`${url}/api/state`);
+    await page.locator('#refresh').click(); await refreshed; await ready();
+    assert.equal(await page.locator('#audio').evaluate(audio=>audio.paused),false,'Reading unchanged historical reset cannot pause audio');
+    assert.equal(await page.locator('#audio').evaluate(audio=>audio.src),refreshBefore.src);
+    assert(await page.locator('#audio').evaluate((audio,time)=>audio.currentTime>=time,refreshBefore.time),'Refresh preserves playback position');
     assert.match(await page.locator('#audio-status').textContent(), /Generated sample tone/);
     await page.evaluate(async()=>{
       const context=new AudioContext();
@@ -161,6 +168,17 @@ const { projectTrace, makeDemoWav } = require(path.join(root, 'web/app.js'));
     assert.equal(await page.locator('#audio').evaluate(audio=>audio.paused),true,'Selection changes require explicit Play');
     await playAudio(); await page.waitForFunction(audioEnergy);
     const localAURL=await page.locator('#audio').evaluate(audio=>audio.src);
+    // Persisted lifecycle events retain files, pause audio and reconcile C on return.
+    await page.evaluate(()=>dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true})));
+    assert.equal(await page.locator('#audio').evaluate(audio=>audio.paused),true);
+    assert.equal(await page.locator('#audio').evaluate(audio=>audio.src),localAURL);
+    assert.equal(await page.evaluate(url=>window.revokedAudioURLs.includes(url),localAURL),false);
+    const restored=page.waitForResponse(response=>response.url()===`${url}/api/state`);
+    await page.evaluate(()=>dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true})));
+    await restored; await ready();
+    assert.match(await page.locator('#audio-status').textContent(),/Local audio: local-a.wav/);
+    assert.equal(await page.locator('#audio').evaluate(audio=>audio.paused),true,'Back never autoplays');
+    await playAudio(); await page.waitForFunction(audioEnergy);
     await page.locator('#destination').selectOption('secondary');
     await page.locator('#title').fill('Local B'); await page.locator('#artist').fill('Student');
     await page.locator('#audio-file').setInputFiles(localFile('local-b.wav'));
@@ -369,6 +387,12 @@ const { projectTrace, makeDemoWav } = require(path.join(root, 'web/app.js'));
       window.guideFrames = {};
       window.guideHighlights = [];
       window.guideGraphVisibility = [];
+      window.guideToolbarVisibility = [];
+      window.guidePhases = [];
+      new MutationObserver(()=>{
+        const phase=document.body.dataset.tourPhase;
+        if (phase) window.guidePhases.push({phase,desk:document.querySelector('.operation-desk').getClientRects().length>0,lab:document.getElementById('pointer-lab').getClientRects().length>0});
+      }).observe(document.body,{attributes:true,attributeFilter:['data-tour-phase']});
       new MutationObserver(records=>{
         for (const record of records) {
           const target=record.target;
@@ -385,6 +409,10 @@ const { projectTrace, makeDemoWav } = require(path.join(root, 'web/app.js'));
       new MutationObserver(()=>{
         const step=document.getElementById('guided-progress').value;
         (window.guideFrames[step] ||= []).push(document.getElementById('replay-meter').value);
+        for (const id of ['guided-pause','guided-stop']) {
+          const box=document.getElementById(id).getBoundingClientRect();
+          window.guideToolbarVisibility.push({id,visible:box.top>=0&&box.bottom<=innerHeight&&box.width>0,top:box.top,bottom:box.bottom,width:box.width,phase:document.body.dataset.tourPhase,frame:document.getElementById('replay-meter').value,scroll:scrollY,viewport:[innerWidth,innerHeight]});
+        }
         const label=document.getElementById('active-assignment').textContent;
         const card=label.startsWith('Side ') ? document.querySelector('.node-card.is-target')||document.querySelector('.node-card.is-source') : document.querySelector('.node-card.is-visited,.node-card.is-allocated,.node-card.is-source,.node-card.is-freed');
         if (card) {
@@ -441,21 +469,75 @@ const { projectTrace, makeDemoWav } = require(path.join(root, 'web/app.js'));
     await page.screenshot({path:path.join(output,'guided-complete.png'),fullPage:true});
 
     // The former clipped-card cases need full real tours, not just idle screenshots.
-    for (const [width,height] of [[768,768],[1024,600]]) {
+    for (const [width,height] of [[768,768],[1024,600],[390,844],[320,812]]) {
       await page.setViewportSize({width,height}); await page.reload(); await ready();
       await page.locator('#guided-speed').selectOption('4'); await installGuideProbes();
       captured={fields:[],responses:[]};
       await page.locator('#guided-start').click();
+      if (width===390) {
+        await page.waitForFunction(()=>document.body.dataset.tourPhase==='replay'&&document.getElementById('guided-progress').value>=1&&document.getElementById('connection').textContent==='C state connected');
+        await page.locator('#guided-pause').click();
+        const pausedPosts=captured.fields.length;
+        const pausedValue=await page.locator('#replay-meter').evaluate(meter=>meter.value);
+        assert.equal(await page.locator('#guided-stop').isVisible(),true,'Mobile Stop reachable during replay');
+        await page.waitForTimeout(150);
+        assert.equal(captured.fields.length,pausedPosts);
+        assert.equal(await page.locator('#replay-meter').evaluate(meter=>meter.value),pausedValue);
+        // Capture the bounded stage, not Chromium's transient full-page capture viewport.
+        await page.screenshot({path:path.join(output,'guided-mobile-paused.png')});
+        await page.locator('#guided-pause').click();
+      }
       await page.waitForFunction(()=>document.getElementById('guided-demo').dataset.status==='complete');
       assert.deepEqual(captured.fields.map(fields=>fields.action),['reset','add','next','previous','select','delete','reverse','merge']);
-      const visibility=await page.evaluate(()=>({cards:window.guideGraphVisibility,controls:window.guideHighlights}));
+      const visibility=await page.evaluate(()=>({cards:window.guideGraphVisibility,controls:window.guideHighlights,toolbar:window.guideToolbarVisibility,phases:window.guidePhases,frames:window.guideFrames}));
       assert(visibility.cards.length>=25,`${width}x${height}: actual pointer frames measured`);
       assert.deepEqual(visibility.cards.filter(card=>!card.visible),[],`${width}x${height}: full active C card fits: ${JSON.stringify(visibility.cards.filter(card=>!card.visible))}`);
-      assert.deepEqual(visibility.controls.filter(control=>!control.visible),[],`${width}x${height}: automatic controls fit`);
+      assert.deepEqual(visibility.controls.filter(control=>!control.visible),[],`${width}x${height}: automatic controls fit: ${JSON.stringify(visibility.controls.filter(control=>!control.visible))}`);
+      assert.deepEqual(visibility.toolbar.filter(control=>!control.visible),[],`${width}x${height}: Pause/Stop remain reachable`);
+      if (width<=760) {
+        assert(visibility.phases.some(phase=>phase.phase==='controls')&&visibility.phases.some(phase=>phase.phase==='replay'));
+        assert(visibility.phases.every(phase=>phase.desk===(phase.phase==='controls')&&phase.lab===(phase.phase==='replay')),'Mobile presents one truthful stage at a time');
+        const snapshots=await Promise.all(captured.responses);
+        for (const [index,snapshot] of snapshots.entries()) for (let f=snapshot.operation.trace.events.length?0:1;f<=snapshot.operation.trace.events.length+1;f++) assert(visibility.frames[index].includes(f),`Mobile ${width}: every C frame ${index}/${f}`);
+        assert.equal(await page.locator('body').getAttribute('data-tour-phase'),null,'Completion restores normal stacked mobile UI');
+      }
       assert.equal(await page.locator('#audio').evaluate(audio=>audio.paused),true);
       await page.screenshot({path:path.join(output,`guided-${width}x${height}.png`),fullPage:true});
       console.log(`PASS: guided ${width}x${height} full-card/control visibility (${visibility.cards.length} C frames).`);
     }
+    // A paused controls phase must re-center its target and cursor after shrinking.
+    await page.setViewportSize({width:390,height:844}); await page.reload(); await ready();
+    await page.locator('#guided-speed').selectOption('1'); captured={fields:[],responses:[]};
+    await page.locator('#guided-start').click();
+    await page.waitForFunction(()=>document.body.dataset.tourPhase==='controls'&&document.querySelector('#add-submit.guided-target'));
+    await page.locator('#guided-pause').click();
+    const resizePosts=captured.fields.length;
+    await page.setViewportSize({width:320,height:480});
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    const resizeProbe=await page.evaluate(()=>{
+      const target=document.querySelector('.guided-target'),box=target.getBoundingClientRect();
+      const pane=target.closest('.operation-desk').getBoundingClientRect(),guide=document.getElementById('guided-demo').getBoundingClientRect();
+      const cursor=document.getElementById('guided-cursor');
+      const top=Math.max(0,guide.bottom,pane.top),bottom=Math.min(innerHeight,pane.bottom);
+      return {visible:box.top>=top&&box.bottom<=bottom,top:box.top,bottom:box.bottom,clipTop:top,clipBottom:bottom,cursor:[parseFloat(cursor.style.left),parseFloat(cursor.style.top)],center:[box.left+box.width/2,box.top+box.height/2]};
+    });
+    assert(resizeProbe.visible,`Paused resize target fully visible: ${JSON.stringify(resizeProbe)}`);
+    assert(resizeProbe.cursor.every((value,index)=>Math.abs(value-resizeProbe.center[index])<=1),'Cursor follows resized target');
+    assert.equal(await page.locator('#guided-demo').getAttribute('data-status'),'paused');
+    assert.equal(captured.fields.length,resizePosts,'Resize cannot unpause or dispatch C work');
+    await page.screenshot({path:path.join(output,'guided-paused-resize.png')});
+    await page.locator('#guided-stop').click();
+    await page.setViewportSize({width:320,height:812});
+    await page.locator('#guided-speed').selectOption('4');
+    console.log('PASS: paused mobile resize keeps target/cursor aligned without dispatching C work.');
+
+    captured={fields:[],responses:[]};
+    await page.locator('#guided-start').click();
+    await page.waitForFunction(()=>document.body.dataset.tourPhase==='replay'&&document.getElementById('guided-progress').value>=1&&document.getElementById('connection').textContent==='C state connected');
+    await page.locator('#guided-stop').click();
+    const mobileStoppedPosts=captured.fields.length; await page.waitForTimeout(200);
+    assert.equal(captured.fields.length,mobileStoppedPosts,'Mobile Stop prevents future actions');
+    assert.equal(await page.locator('body').getAttribute('data-tour-phase'),null,'Mobile Stop restores manual layout');
     await page.setViewportSize({width:1440,height:1000}); await page.reload(); await ready();
     // Stop/view-exit cannot undo a C POST that was already accepted, but must stop future work.
     let acceptedResolve; let releaseResolve;
@@ -515,11 +597,46 @@ const { projectTrace, makeDemoWav } = require(path.join(root, 'web/app.js'));
         await page.screenshot({path:path.join(output,`${view}-${name}.png`),fullPage:true});
       }
     }
+    // Exercise a real Back round trip when this browser chooses BFCache.
+    // Reload-on-Back remains valid too: only a retained document promises retained local files.
+    const cacheContext=await browser.newContext();
+    const cachePage=await cacheContext.newPage();
+    cachePage.on('pageerror',error=>errors.push(`BFCache page: ${error.message}`));
+    let cacheId;
+    try {
+      await cachePage.goto(`${url}/#demo`);
+      const cacheReady=()=>cachePage.waitForFunction(()=>document.getElementById('connection').textContent==='C state connected');
+      await cacheReady();
+      const cacheAction=async(control,action)=>{
+        const response=cachePage.waitForResponse(response=>response.url()===`${url}/api/action`&&new URLSearchParams(response.request().postData()).get('action')===action);
+        await control.click(); const snapshot=await (await response).json(); await cacheReady(); return snapshot;
+      };
+      await cachePage.locator('#title').fill('Cache music'); await cachePage.locator('#artist').fill('Student');
+      await cachePage.locator('#audio-file').setInputFiles(localFile('bfcache.wav'));
+      const snapshot=await cacheAction(cachePage.locator('#add-submit'),'add');
+      cacheId=snapshot.playlists[0].nodes.at(-1).id;
+      await cacheAction(cachePage.locator(`#main-tracks .track-select[data-id="${cacheId}"]`),'select');
+      await cachePage.waitForFunction(()=>document.getElementById('audio').readyState>=1);
+      const cachedSource=await cachePage.locator('#audio').evaluate(audio=>audio.src);
+      await cachePage.evaluate(()=>{window.cacheWitness=true;addEventListener('pageshow',event=>{window.cacheWasPersisted=event.persisted;});});
+      await cachePage.goto('about:blank'); await cachePage.goBack(); await cacheReady();
+      if (await cachePage.evaluate(()=>window.cacheWitness===true)) {
+        assert.equal(await cachePage.evaluate(()=>window.cacheWasPersisted),true);
+        assert.equal(await cachePage.locator('#audio').evaluate(audio=>audio.src),cachedSource);
+        assert.match(await cachePage.locator('#audio-status').textContent(),/Local audio: bfcache.wav/);
+        assert.equal(await cachePage.locator('#audio').evaluate(audio=>audio.paused),true);
+        console.log('PASS: real persisted Back navigation retains local audio without autoplay.');
+      } else console.log('INFO: browser reloaded on Back; persisted lifecycle retention independently tested with native events.');
+    } finally {
+      await cacheContext.close();
+      if (cacheId) await external({action:'delete',playlist:'main',id:String(cacheId)});
+    }
     assert.deepEqual(errors,[],`No console/page errors: ${JSON.stringify(errors)}`);
     console.log(`PASS: ${checks} C-backed replay/layout checks; real intermediate assignments, visits, allocation/free ghosts, navigation/reverse/merge; side-by-side geometry; settled SVG edges; playback/pause/step/replay/finish/speed/interruption; stale before snapshot; Unicode, focus, empty states, responsive and reduced motion. URL ${url}`);
     console.log('PASS: default demo/explicit simulation routing, history/deep-link/reload and preserved C state; guided 8-POST sequence and every recorded frame, derived IDs, visible automatic controls, duplicate Start, pause/resume/speed, in-flight Stop, view exit, reduced motion, rejection/no retry, both-view responsive screenshots.');
     console.log(`Screenshots: ${output}`);
   } catch (error) {
+    fs.writeFileSync(path.join(output,'failure-probes.json'),JSON.stringify(await page.evaluate(()=>({controls:window.guideHighlights,cards:window.guideGraphVisibility,toolbar:window.guideToolbarVisibility,phases:window.guidePhases})),null,2));
     await page.screenshot({path:path.join(output,'failure.png'),fullPage:true});
     throw error;
   } finally { await context.close(); await browser.close(); }

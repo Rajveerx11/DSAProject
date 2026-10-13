@@ -267,5 +267,16 @@ body[data-view="simulation"] .node-scroll { min-height:220px; }
   body[data-view="demo"] .track-row { gap:5px; padding:6px; }
   body[data-view="demo"] .track-list { max-height:300px; }
 }
+/* Active mobile tours keep the guide visible and give one pane the viewport. */
+@media (max-width:760px) {
+  body[data-view="simulation"][data-tour-phase] .workspace { gap:12px; padding:0; }
+  body[data-view="simulation"][data-tour-phase] #guided-demo { position:sticky; top:0; z-index:5; padding:8px 10px; gap:6px; }
+  body[data-view="simulation"][data-tour-phase] .guided-controls select { min-height:44px; }
+  body[data-view="simulation"][data-tour-phase] :is(.operation-desk,.pointer-lab) { flex:none; height:calc(100dvh - var(--tour-guide-height,180px) - 24px); max-height:calc(100dvh - var(--tour-guide-height,180px) - 24px); overflow:auto; overscroll-behavior:contain; }
+  body[data-view="simulation"][data-tour-phase="controls"] #pointer-lab,
+  body[data-view="simulation"][data-tour-phase="replay"] .operation-desk { display:none; }
+  body[data-view="simulation"][data-tour-phase] .operation-desk { padding-bottom:12px; }
+  body[data-view="simulation"][data-tour-phase] .replay-inspector { position:sticky; top:0; }
+}
 @media (max-width:540px) { body[data-view="demo"] .playlist-grid { grid-template-columns:minmax(0,1fr); } body[data-view="demo"] #merge { width:100%; } }
 @media (prefers-reduced-motion:reduce) { *,*::before,*::after { animation:none !important; transition:none !important; scroll-behavior:auto !important; } .guided-cursor { display:none !important; } .guided-pressed { transform:none; outline:3px solid var(--accent-dark); outline-offset:3px; } }

@@ -330,11 +330,11 @@ function createAudioPlayer(audio, canPlay, update, urls = URL) {
     emit();
   }
   function sync(result, attachment = null) {
-    if (result.operation.action === 'reset') clearSource();
+    // The operation is historical on GET; fresh C IDs/membership identify a real reset.
     const nodes = new Map(result.playlists.flatMap(list => list.nodes.map(node => [node.id, node])));
     const obsolete = [...local].filter(([id, media]) => {
       const node = nodes.get(id);
-      return result.operation.action === 'reset' || !node || node.title !== media.title || node.artist !== media.artist;
+      return !node || node.title !== media.title || node.artist !== media.artist;
     });
     if (obsolete.some(([, media]) => media === source)) clearSource();
     for (const [id, media] of obsolete) { urls.revokeObjectURL(media.url); local.delete(id); }
@@ -406,12 +406,14 @@ function createAudioPlayer(audio, canPlay, update, urls = URL) {
     notice = source.filename ? 'Cannot decode this local audio file; choose another record or supported file' : 'Cannot decode the generated sample tone in this browser';
     emit();
   });
-  return { sync, toggle, pause, dispose };
+  const pagehide = event => event.persisted ? pause() : dispose();
+  return { sync, toggle, pause, dispose, pagehide };
 }
 
 function initializeApp() {
   const $ = id => document.getElementById(id);
   const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  const mobile = window.matchMedia('(max-width: 760px)');
   let state = null;
   let pending = false;
   let connected = false;
@@ -439,44 +441,64 @@ function initializeApp() {
     guidedTarget = null;
     if ($('guided-cursor')) $('guided-cursor').hidden = true;
   }
+  function sizeTourViewport() {
+    if (document.body.dataset.tourPhase && mobile.matches) {
+      document.body.style.setProperty('--tour-guide-height', `${$('guided-demo').getBoundingClientRect().height}px`);
+    } else document.body.style.removeProperty('--tour-guide-height');
+  }
+  function presentTourPhase(phase) {
+    document.body.dataset.tourPhase = phase;
+    sizeTourViewport();
+    if (mobile.matches) {
+      $('guided-demo').scrollIntoView({ block: 'start', behavior: 'instant' });
+      if (phase === 'replay') $('guided-cursor').hidden = true;
+    }
+    // The mobile canvas was hidden during the button presentation; rebuild its geometry.
+    if (phase === 'replay' && state) renderReplay();
+  }
+  function positionGuidedTarget(withMotion = false) {
+    // Pan only the bounded panes, never keyboard focus.
+    const desk = document.querySelector('.operation-desk');
+    if (guidedTarget && desk.contains(guidedTarget)) {
+      for (const pane of [guidedTarget.closest('.track-list'), desk]) {
+        if (!pane || pane.scrollHeight <= pane.clientHeight) continue;
+        const box = guidedTarget.getBoundingClientRect();
+        const viewport = pane.getBoundingClientRect();
+        pane.scrollTop += box.top - viewport.top - (viewport.height - box.height) / 2;
+      }
+    }
+    const cursor = $('guided-cursor');
+    if (cursor && guidedTarget && !motion.matches) {
+      if (!withMotion) cursor.getAnimations().forEach(animation => animation.cancel());
+      const box = guidedTarget.getBoundingClientRect();
+      const left = box.left + box.width / 2, top = box.top + box.height / 2;
+      const oldLeft = Number.parseFloat(cursor.style.left), oldTop = Number.parseFloat(cursor.style.top);
+      cursor.style.left = `${left}px`;
+      cursor.style.top = `${top}px`;
+      cursor.hidden = false;
+      if (withMotion && Number.isFinite(oldLeft) && Number.isFinite(oldTop)) animate(cursor, [{ transform: `translate(${oldLeft - left}px, ${oldTop - top}px)` }, { transform: 'translate(0, 0)' }]);
+    }
+  }
   const guided = createGuidedController({
     canStart: () => Boolean($('guided-demo') && view === 'simulation' && !pending && connected && state && !hidden && !document.hidden),
     request: async fields => {
+      presentTourPhase('replay');
       const accepted = await requestState(fields, true);
       if (!accepted) throw new Error($('feedback').textContent);
       return state;
     },
     prepare: async (fields, { wait }) => {
       clearGuidedTarget();
+      presentTourPhase('controls');
       if (fields.action === 'add') {
         for (const id of ['title', 'artist']) { $(id).value = fields[id]; validateField(id); }
         $('destination').value = fields.playlist;
       }
       guidedTarget = fields.id
         ? [...document.querySelectorAll('button[data-action]')].find(button => button.dataset.action === fields.action && button.dataset.id === fields.id && button.dataset.playlist === fields.playlist)
-        : $(fields.action === 'add' ? 'add-submit' : fields.action === 'reverse' ? 'reverse-main' : fields.action);
+        : $(mobile.matches && fields.action === 'reset' ? 'guided-start' : fields.action === 'add' ? 'add-submit' : fields.action === 'reverse' ? 'reverse-main' : fields.action);
       guidedTarget?.classList.add('guided-target');
-      // Pan only the bounded operation pane: keep Start/Pause and the canvas visible.
-      const desk = document.querySelector('.operation-desk');
-      if (guidedTarget && desk.contains(guidedTarget)) {
-        // A row may be clipped by its own playlist as well as the outer desk.
-        for (const pane of [guidedTarget.closest('.track-list'), desk]) {
-          if (!pane || pane.scrollHeight <= pane.clientHeight) continue;
-          const box = guidedTarget.getBoundingClientRect();
-          const viewport = pane.getBoundingClientRect();
-          pane.scrollTop += box.top - viewport.top - (viewport.height - box.height) / 2;
-        }
-      }
-      const cursor = $('guided-cursor');
-      if (cursor && guidedTarget && !motion.matches) {
-        const box = guidedTarget.getBoundingClientRect();
-        const left = box.left + box.width / 2, top = box.top + box.height / 2;
-        const oldLeft = Number.parseFloat(cursor.style.left), oldTop = Number.parseFloat(cursor.style.top);
-        cursor.style.left = `${left}px`;
-        cursor.style.top = `${top}px`;
-        cursor.hidden = false;
-        if (Number.isFinite(oldLeft) && Number.isFinite(oldTop)) animate(cursor, [{ transform: `translate(${oldLeft - left}px, ${oldTop - top}px)` }, { transform: 'translate(0, 0)' }]);
-      }
+      positionGuidedTarget(true);
       await wait(650, !motion.matches);
       guidedTarget?.classList.add('guided-pressed');
       await wait(180, !motion.matches);
@@ -494,7 +516,11 @@ function initializeApp() {
     },
     update: snapshot => {
       guidedStatus = snapshot;
-      if (!snapshot.active) { clearGuidedTarget(); cancelAnimations(); drawEdges(); }
+      if (!snapshot.active) {
+        delete document.body.dataset.tourPhase;
+        document.body.style.removeProperty('--tour-guide-height');
+        clearGuidedTarget(); cancelAnimations(); drawEdges();
+      }
       updateControls();
     }
   });
@@ -590,6 +616,7 @@ function initializeApp() {
       $('guided-pause').disabled = !guided.active();
       $('guided-pause').textContent = guided.paused() ? 'Resume' : 'Pause';
       $('guided-stop').disabled = !guided.active();
+      sizeTourViewport();
     }
     const unavailable = !state || pending || guided.active();
     $('replay-auto').disabled = guided.active();
@@ -1070,6 +1097,12 @@ function initializeApp() {
     updateControls();
   }
   window.addEventListener('hashchange', navigate);
+  window.addEventListener('resize', () => {
+    if (!guided.active()) return;
+    const phase = document.body.dataset.tourPhase || 'controls';
+    presentTourPhase(phase);
+    if (phase === 'controls') positionGuidedTarget();
+  });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { player?.pause(); guided.stop('Stopped while the page was hidden. Accepted C actions remain committed; pending requests may still complete.'); finish(); }
     updateControls();
@@ -1077,10 +1110,10 @@ function initializeApp() {
   navigate();
   const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => drawEdges()) : null;
   observer?.observe($('diagrams'));
-  window.addEventListener('pagehide', () => {
+  window.addEventListener('pagehide', event => {
     guided.stop('Stopped on page exit. An in-flight C action may have committed; refresh state on return.');
     hidden = true;
-    player?.dispose();
+    player?.pagehide(event);
     pause();
     cancelAnimations();
     clearTimeout(requestTimer);
