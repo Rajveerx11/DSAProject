@@ -456,6 +456,29 @@ function initializeApp() {
     // The mobile canvas was hidden during the button presentation; rebuild its geometry.
     if (phase === 'replay' && state) renderReplay();
   }
+  function positionGuidedTarget(withMotion = false) {
+    // Pan only the bounded panes, never keyboard focus.
+    const desk = document.querySelector('.operation-desk');
+    if (guidedTarget && desk.contains(guidedTarget)) {
+      for (const pane of [guidedTarget.closest('.track-list'), desk]) {
+        if (!pane || pane.scrollHeight <= pane.clientHeight) continue;
+        const box = guidedTarget.getBoundingClientRect();
+        const viewport = pane.getBoundingClientRect();
+        pane.scrollTop += box.top - viewport.top - (viewport.height - box.height) / 2;
+      }
+    }
+    const cursor = $('guided-cursor');
+    if (cursor && guidedTarget && !motion.matches) {
+      if (!withMotion) cursor.getAnimations().forEach(animation => animation.cancel());
+      const box = guidedTarget.getBoundingClientRect();
+      const left = box.left + box.width / 2, top = box.top + box.height / 2;
+      const oldLeft = Number.parseFloat(cursor.style.left), oldTop = Number.parseFloat(cursor.style.top);
+      cursor.style.left = `${left}px`;
+      cursor.style.top = `${top}px`;
+      cursor.hidden = false;
+      if (withMotion && Number.isFinite(oldLeft) && Number.isFinite(oldTop)) animate(cursor, [{ transform: `translate(${oldLeft - left}px, ${oldTop - top}px)` }, { transform: 'translate(0, 0)' }]);
+    }
+  }
   const guided = createGuidedController({
     canStart: () => Boolean($('guided-demo') && view === 'simulation' && !pending && connected && state && !hidden && !document.hidden),
     request: async fields => {
@@ -475,27 +498,7 @@ function initializeApp() {
         ? [...document.querySelectorAll('button[data-action]')].find(button => button.dataset.action === fields.action && button.dataset.id === fields.id && button.dataset.playlist === fields.playlist)
         : $(mobile.matches && fields.action === 'reset' ? 'guided-start' : fields.action === 'add' ? 'add-submit' : fields.action === 'reverse' ? 'reverse-main' : fields.action);
       guidedTarget?.classList.add('guided-target');
-      // Pan only the bounded operation pane: keep Start/Pause and the canvas visible.
-      const desk = document.querySelector('.operation-desk');
-      if (guidedTarget && desk.contains(guidedTarget)) {
-        // A row may be clipped by its own playlist as well as the outer desk.
-        for (const pane of [guidedTarget.closest('.track-list'), desk]) {
-          if (!pane || pane.scrollHeight <= pane.clientHeight) continue;
-          const box = guidedTarget.getBoundingClientRect();
-          const viewport = pane.getBoundingClientRect();
-          pane.scrollTop += box.top - viewport.top - (viewport.height - box.height) / 2;
-        }
-      }
-      const cursor = $('guided-cursor');
-      if (cursor && guidedTarget && !motion.matches) {
-        const box = guidedTarget.getBoundingClientRect();
-        const left = box.left + box.width / 2, top = box.top + box.height / 2;
-        const oldLeft = Number.parseFloat(cursor.style.left), oldTop = Number.parseFloat(cursor.style.top);
-        cursor.style.left = `${left}px`;
-        cursor.style.top = `${top}px`;
-        cursor.hidden = false;
-        if (Number.isFinite(oldLeft) && Number.isFinite(oldTop)) animate(cursor, [{ transform: `translate(${oldLeft - left}px, ${oldTop - top}px)` }, { transform: 'translate(0, 0)' }]);
-      }
+      positionGuidedTarget(true);
       await wait(650, !motion.matches);
       guidedTarget?.classList.add('guided-pressed');
       await wait(180, !motion.matches);
@@ -1096,7 +1099,9 @@ function initializeApp() {
   window.addEventListener('hashchange', navigate);
   window.addEventListener('resize', () => {
     if (!guided.active()) return;
-    presentTourPhase(document.body.dataset.tourPhase || 'controls');
+    const phase = document.body.dataset.tourPhase || 'controls';
+    presentTourPhase(phase);
+    if (phase === 'controls') positionGuidedTarget();
   });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { player?.pause(); guided.stop('Stopped while the page was hidden. Accepted C actions remain committed; pending requests may still complete.'); finish(); }

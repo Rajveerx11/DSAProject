@@ -505,6 +505,32 @@ const { projectTrace, makeDemoWav } = require(path.join(root, 'web/app.js'));
       await page.screenshot({path:path.join(output,`guided-${width}x${height}.png`),fullPage:true});
       console.log(`PASS: guided ${width}x${height} full-card/control visibility (${visibility.cards.length} C frames).`);
     }
+    // A paused controls phase must re-center its target and cursor after shrinking.
+    await page.setViewportSize({width:390,height:844}); await page.reload(); await ready();
+    await page.locator('#guided-speed').selectOption('1'); captured={fields:[],responses:[]};
+    await page.locator('#guided-start').click();
+    await page.waitForFunction(()=>document.body.dataset.tourPhase==='controls'&&document.querySelector('#add-submit.guided-target'));
+    await page.locator('#guided-pause').click();
+    const resizePosts=captured.fields.length;
+    await page.setViewportSize({width:320,height:480});
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    const resizeProbe=await page.evaluate(()=>{
+      const target=document.querySelector('.guided-target'),box=target.getBoundingClientRect();
+      const pane=target.closest('.operation-desk').getBoundingClientRect(),guide=document.getElementById('guided-demo').getBoundingClientRect();
+      const cursor=document.getElementById('guided-cursor');
+      const top=Math.max(0,guide.bottom,pane.top),bottom=Math.min(innerHeight,pane.bottom);
+      return {visible:box.top>=top&&box.bottom<=bottom,top:box.top,bottom:box.bottom,clipTop:top,clipBottom:bottom,cursor:[parseFloat(cursor.style.left),parseFloat(cursor.style.top)],center:[box.left+box.width/2,box.top+box.height/2]};
+    });
+    assert(resizeProbe.visible,`Paused resize target fully visible: ${JSON.stringify(resizeProbe)}`);
+    assert(resizeProbe.cursor.every((value,index)=>Math.abs(value-resizeProbe.center[index])<=1),'Cursor follows resized target');
+    assert.equal(await page.locator('#guided-demo').getAttribute('data-status'),'paused');
+    assert.equal(captured.fields.length,resizePosts,'Resize cannot unpause or dispatch C work');
+    await page.screenshot({path:path.join(output,'guided-paused-resize.png')});
+    await page.locator('#guided-stop').click();
+    await page.setViewportSize({width:320,height:812});
+    await page.locator('#guided-speed').selectOption('4');
+    console.log('PASS: paused mobile resize keeps target/cursor aligned without dispatching C work.');
+
     captured={fields:[],responses:[]};
     await page.locator('#guided-start').click();
     await page.waitForFunction(()=>document.body.dataset.tourPhase==='replay'&&document.getElementById('guided-progress').value>=1&&document.getElementById('connection').textContent==='C state connected');
