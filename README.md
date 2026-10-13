@@ -22,10 +22,18 @@ wsl.exe --cd /mnt/c/DSAProject -- ./build/musiclab --port 8081
 
 The server binds only to loopback. This is a single-process, serial classroom application, **not a production web server** or an authenticated multi-user service. Do not expose it to the internet.
 
-## Using the simulator
+## Demo and simulation views
 
-- **Left:** compact operation desk, current record, Add, Next/Previous, both playlists, Delete, Reverse, Merge, and Reset. This collection always displays committed C state.
-- **Right:** always-visible pointer canvas and replay inspector. No scrolling down to reveal a hidden lab on desktop; small screens stack the sections.
+- **Demo** (`http://localhost:8081/#demo`, also the default root page): manual playlist UI only, without pointer diagrams, replay controls or node-ID metadata. Use this first when demonstrating the working application.
+- **Simulation** (`http://localhost:8081/#simulation`): left operation desk and right C-recorded pointer canvas. Navigation preserves C state; it does not reset the playlists. Desktop panes scroll independently to keep guided controls visible; small screens stack the sections.
+- Click **Start tour** once for eight automatic real C actions: Reset → Add → Next → Previous → Select the added record → Delete it → Reverse A → Merge B into A. Fields fill automatically, a decorative cursor moves to highlighted controls, and every C-recorded frame completes before the next action. No OS cursor or keyboard focus is taken over.
+- **Start replaces both playlists with sample data**, as the visible warning states. Use **Pause/Resume**, **Stop** and guided **Speed** to control the tour. A new Start is explicit; duplicate starts and competing manual/replay operations are blocked while a tour is active or paused. Stop/view exit/page hiding prevents future actions but cannot undo a C request already sent. Request failures halt the tour; refresh after an uncertain response before restarting.
+- Reduced motion keeps the guided action sequence and readable explanations but omits moving cursor/FLIP and per-event playback. Manual frame inspection remains available after the tour.
+
+### Manual simulation
+
+- **Left:** current record, Add, Next/Previous, both playlists, Delete, Reverse, Merge, and Reset. This collection always displays committed C state.
+- **Right:** recorded pointer replay and operation explanations. The guided tour is idle until Start, so individual operations can still be demonstrated manually.
 - The demo starts with three sample records in **My playlist** and two in **Side B**. No real music, audio files, or playback is needed.
 - An operation automatically replays actual C allocation, comparison/visit, pointer-write, and free events. Watch `prev`, `next`, `head`, `tail`, and `current` change, one recorded assignment at a time.
 - Use **Pause/Continue**, **Previous step**, **Next step**, **Replay**, **Finish**, and **Speed**. Disable **Auto-play steps** for a viva-style manual walkthrough. Large traces (>80 events) start paused. Reduced motion immediately shows final state, while manual steps remain available without motion.
@@ -52,9 +60,9 @@ State lives in RAM and disappears when the server stops. Track titles/artists ar
 | `src/api.h`, `src/api.c` | Validate commands; copy before state; capture and serialize real C events |
 | `src/server.c` | Loopback HTTP adapter and allowlisted static files |
 | `web/index.html`, `web/styles.css` | Accessible responsive player and pointer-lab layout |
-| `web/app.js` | Requests, safe rendering, C-trace projection, directed arrows, native animations |
+| `web/app.js` | Hash views, sequential guided requests, safe rendering, C-trace projection, arrows and native animations |
 | `tests/native.c`, `tests/trace.c`, `tests/api.mjs`, `web/check.cjs` | Pointer invariants, trace order/parity/lifetime/capacity, API, and projection checks |
-| `API.md`, `PLAN.md`, `SIMULATION.md` | Shared API, delivery plan, and side-by-side replay contract |
+| `API.md`, `PLAN.md`, `SIMULATION.md`, `GUIDED_DEMO.md` | API, delivery plan, recorded replay and guided-view contracts |
 
 ```c
 typedef struct SongNode {
@@ -113,12 +121,12 @@ node /tmp/musiclab-browser-tools/node_modules/playwright/cli.js install chromium
 NODE_PATH=/tmp/musiclab-browser-tools/node_modules make test-browser
 ```
 
-If Chromium needs system libraries, use Playwright's `install --with-deps chromium` command. Alternatively set `CHROMIUM_PATH` to an existing Chromium executable. The test owns an ephemeral C server and closes it on completion. It covers actual C-recorded intermediate/final frames, moving blocks and settled arrow geometry, visits/comparisons, allocation/free ghosts, replay controls and interruption, responsive widths, keyboard focus, reduced motion, and page errors. Screenshots default to `/tmp/musiclab-simulator-evidence`; override `MUSICLAB_EVIDENCE` if needed. CI runs these checks and uploads screenshots. This vanilla JavaScript project has no TypeScript typecheck or bundler build step.
+If Chromium needs system libraries, use Playwright's `install --with-deps chromium` command. Alternatively set `CHROMIUM_PATH` to an existing Chromium executable. The test owns an ephemeral C server and closes it on completion. It covers actual C-recorded frames and arrow geometry, visits, allocation/free ghosts, manual replay, Demo/Simulation routing and state preservation, the ordered eight-POST guided sequence and all recorded frames, visible control highlights, duplicate Start, pause/resume/stop/speed, in-flight acceptance and view exit, failure/no-retry, keyboard focus, reduced motion and both-view responsive layouts. Screenshots default to `/tmp/musiclab-simulator-evidence`; override `MUSICLAB_EVIDENCE` if needed. CI runs these checks and uploads screenshots. This vanilla JavaScript project has no TypeScript typecheck or bundler build step.
 
 ## Ten-minute demonstration
 
 1. **0–1 minute — Problem:** Explain why a playlist needs forward/back navigation and why a doubly linked list fits.
-2. **1–3 — Navigate:** Move Next/Previous on the left; Pause/Step on the right to inspect actual current-pointer writes and NULL boundaries.
+2. **1–3 — Demo first:** Use the Demo view to add/select records and navigate Next/Previous without diagrams. Then open Simulation and press Start tour for the hands-off walkthrough; pause to explain a C-recorded pointer assignment.
 3. **3–5 — Insert/delete:** Add a song; inspect old/new tail links. Delete a middle node, then current; show the replacement current.
 4. **5–7 — Reverse:** Keep the current song selected; reverse and show exchanged links/endpoints.
 5. **7–8 — Concatenate:** Merge Side B; verify IDs stay unchanged and source becomes empty.

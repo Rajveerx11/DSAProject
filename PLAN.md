@@ -1,7 +1,7 @@
 # Music Player & Doubly Linked List Lab — Delivery Plan
 
 ## Goal
-Build a polished, local playlist simulator for a second-year DSA demonstration. C owns every node and pointer mutation; HTML/CSS/JavaScript provides an operation desk on the left and an always-visible C-recorded replay on the right. No Python backend, audio requirement, or JavaScript imitation of the linked list. `SIMULATION.md` defines the latest side-by-side acceptance and trace contract.
+Build a polished, local playlist simulator for a second-year DSA demonstration. C owns every node and pointer mutation; HTML/CSS/JavaScript provides a default manual Demo view and a separate Simulation view with a left operation desk/right C-recorded replay and one-click guided tour. No Python backend, audio requirement, or JavaScript imitation of the linked list. `SIMULATION.md` defines the trace; `GUIDED_DEMO.md` defines the latest frontend-only views and sequential automation, with C unchanged.
 
 ## Scope and architecture
 - C: `SongNode` with stable ID, title, artist, `prev`, and `next`; `Playlist` with `head`, `tail`, `current`, and size. Implement create/add, delete, select, next/previous, display, reverse, concatenate, and cleanup.
