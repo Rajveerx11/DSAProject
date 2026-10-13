@@ -373,8 +373,9 @@ function createAudioPlayer(audio, canPlay, update, urls = URL) {
     emit(); // Never call play here: every source/selection change requires an explicit Play.
   }
   async function toggle() {
-    if (!canPlay() || !current || !source || broken) return;
+    // Stopping existing audio never needs C state or permission to start playback.
     if (wantPlayback || !audio.paused) { pause(); return; }
+    if (!canPlay() || !current || !source || broken) return;
     const ticket = ++attempt;
     try {
       if (audio.ended) audio.currentTime = 0;
@@ -565,7 +566,7 @@ function initializeApp() {
     $('refresh').disabled = pending || guided.active();
     for (const id of ['previous', 'next']) $(id).disabled = locked || !currentTrack();
     if ($('play-pause')) {
-      $('play-pause').disabled = locked || view !== 'demo' || hidden || document.hidden || !audioStatus.available;
+      $('play-pause').disabled = view !== 'demo' || hidden || document.hidden || (!audioStatus.playing && (locked || !audioStatus.available));
       $('play-pause').textContent = audioStatus.playing ? 'Pause' : 'Play';
       $('play-pause').setAttribute('aria-pressed', String(audioStatus.playing));
       $('play-pause').setAttribute('aria-label', `${audioStatus.playing ? 'Pause' : 'Play'} selected Side A record`);

@@ -120,6 +120,23 @@ const { projectTrace, makeDemoWav } = require(path.join(root, 'web/app.js'));
       return samples.reduce((sum,value)=>sum+value*value,0)/samples.length>0.000001;
     };
     await page.waitForFunction(audioEnergy);
+    // Pause is media-only: an accepted C request must not trap playing audio.
+    let pendingReverseResolve,releaseReverseResolve;
+    const pendingReverseAccepted=new Promise(resolve=>{pendingReverseResolve=resolve;});
+    const releaseReverse=new Promise(resolve=>{releaseReverseResolve=resolve;});
+    await page.route('**/api/action',async route=>{const response=await route.fetch();pendingReverseResolve();await releaseReverse;await route.fulfill({response});});
+    const pendingReverse=operation(page.locator('#reverse-main'),'reverse'); await pendingReverseAccepted;
+    const whilePending=await page.locator('#audio').evaluate(audio=>audio.currentTime);
+    await page.waitForFunction(time=>document.getElementById('audio').currentTime>time+.08,whilePending);
+    assert.equal(await page.locator('#play-pause').isDisabled(),false,'Pending C response cannot disable Pause');
+    await page.locator('#play-pause').click();
+    assert.equal(await page.locator('#audio').evaluate(audio=>audio.paused),true);
+    const pausedAudio=await page.locator('#audio').evaluate(audio=>audio.currentTime);
+    await page.waitForTimeout(150); // Native playback must remain stopped during the held response.
+    assert.equal(await page.locator('#audio').evaluate(audio=>audio.currentTime),pausedAudio);
+    assert.equal(await page.locator('#play-pause').isDisabled(),true,'Starting audio stays blocked while C is pending');
+    releaseReverseResolve(); await pendingReverse; await page.unroute('**/api/action');
+    await playAudio();
     await page.locator('#volume').focus(); await page.locator('#volume').press('Home'); await page.locator('#volume').press('ArrowRight');
     assert.equal(await page.locator('#audio').evaluate(audio=>audio.volume), .05);
     await page.locator('#play-pause').click();

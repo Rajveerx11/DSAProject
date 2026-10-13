@@ -480,7 +480,8 @@ async function audioChecks() {
   assert.equal(latest.playing, false);
   await player.toggle();
   allowed = false;
-  player.pause();
+  await player.toggle();
+  assert.equal(media.paused, true, 'Pause remains available when permission to start is blocked');
   await player.toggle();
   assert.equal(latest.playing, false, 'Simulation/hidden/disconnected playback policy blocks Play');
   const playsBefore = media.plays;
