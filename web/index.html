@@ -11,36 +11,56 @@
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
 </head>
-<body>
+<body data-view="demo">
   <a class="skip-link" href="#main">Skip to the operation desk</a>
   <div class="page-shell">
     <header class="masthead">
       <a class="wordmark" href="/" aria-label="Musiclab home">music<span>lab</span><span class="wordmark-dot" aria-hidden="true">●</span></a>
       <p class="masthead-note">RECORDS & POINTERS<br><span>A silent study in connection.</span></p>
+      <nav class="view-nav" aria-label="Workspace views"><a id="view-demo" href="#demo" aria-current="page">Demo</a><a id="view-simulation" href="#simulation">Simulation</a></nav>
       <div class="header-tools"><span id="connection" class="connection">Connecting to C…</span><button id="reset" class="button button-quiet" type="button" disabled>Reset demo</button></div>
     </header>
     <main id="main" class="workspace">
+      <section id="guided-demo" class="guided-demo" data-status="idle" aria-labelledby="guided-heading" hidden>
+        <div class="guided-intro">
+          <p class="eyebrow">GUIDED SESSION / 8 OPERATIONS</p>
+          <h2 id="guided-heading">Follow the record.</h2>
+          <p class="guided-description">A hands-off tour of add, navigation, select, delete, reverse and merge. Watch each real C operation unfold in the canvas.</p>
+          <p id="guided-reset-note" class="guided-reset-note"><strong>Start resets both playlists to sample data.</strong> Your current collection will be replaced.</p>
+        </div>
+        <div class="guided-session">
+          <div class="guided-controls" role="group" aria-label="Guided demonstration controls">
+            <button id="guided-start" class="button button-accent" type="button" aria-describedby="guided-reset-note" disabled>Start tour →</button>
+            <button id="guided-pause" class="button" type="button" disabled>Pause</button>
+            <button id="guided-stop" class="button button-quiet" type="button" disabled>Stop</button>
+            <label class="speed-label" for="guided-speed">Speed <select id="guided-speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
+          </div>
+          <p id="guided-status" class="guided-status" role="status" aria-live="polite" aria-atomic="true">Idle. Press Start for an eight-operation walkthrough.</p>
+          <progress id="guided-progress" max="8" value="0" aria-label="Guided demonstration progress"></progress>
+          <p class="guided-caption">One operation at a time. Pause to look closer; Stop keeps changes already made.</p>
+        </div>
+      </section>
       <div class="operation-desk">
         <section class="deck" aria-labelledby="deck-heading">
-          <div class="desk-heading"><div class="mini-record" aria-hidden="true">A / B</div><div><p class="eyebrow">01 / OPERATION DESK</p><h1 id="deck-heading">Records & links.</h1></div></div>
-          <div class="now-playing"><p class="eyebrow">COMMITTED C STATE · SIDE A</p><h2 id="current-title">Waiting for C…</h2><p id="current-artist">No state received yet.</p><p id="current-id" class="pointer-summary">current → —</p></div>
+          <div class="desk-heading"><div class="mini-record" aria-hidden="true">A / B</div><div><p class="eyebrow"><span class="demo-copy">YOUR RECORD DESK</span><span class="simulation-copy">01 / OPERATION DESK</span></p><h1 id="deck-heading"><span class="demo-copy">A collection, two sides.</span><span class="simulation-copy">Records & links.</span></h1></div></div>
+          <div class="now-playing"><p class="eyebrow"><span class="demo-copy">SELECTED RECORD · SIDE A</span><span class="simulation-copy">COMMITTED C STATE · SIDE A</span></p><h2 id="current-title">Waiting for C…</h2><p id="current-artist">No state received yet.</p><p id="current-id" class="pointer-summary">current → —</p></div>
           <div class="transport" role="group" aria-label="Playlist navigation"><button id="previous" class="button" type="button" disabled>← Previous</button><button id="next" class="button button-accent" type="button" disabled>Next →</button></div>
-          <p class="form-hint">Silent simulation. Track labels are sample metadata; there is no audio playback.</p>
+          <p class="form-hint"><span class="demo-copy">Choose a record below, or move through Side A. A silent collection — no audio playback.</span><span class="simulation-copy">Silent simulation. Track labels are sample metadata; there is no audio playback.</span></p>
         </section>
         <div class="feedback-bar"><span id="feedback" role="status" aria-live="polite" aria-atomic="true">Loading the authoritative C state…</span><button id="refresh" type="button" class="button button-quiet" disabled>Refresh state</button></div>
         <section class="add-section" aria-labelledby="add-heading">
-          <div class="section-heading"><p class="eyebrow">APPEND / C ALLOCATES</p><h2 id="add-heading">Add a record.</h2></div>
+          <div class="section-heading"><p class="eyebrow"><span class="demo-copy">MAKE ROOM FOR ONE MORE</span><span class="simulation-copy">APPEND / C ALLOCATES</span></p><h2 id="add-heading">Add a record.</h2></div>
           <form id="add-form"><fieldset id="add-fields" disabled><legend class="sr-only">New track details</legend>
             <div class="form-grid">
               <div class="field"><label for="title">Track title <span id="title-bytes">0 / 127 bytes</span></label><input id="title" name="title" type="text" placeholder="A name for the groove" required maxlength="127" aria-describedby="text-hint title-bytes" autocomplete="off"></div>
               <div class="field"><label for="artist">Artist <span id="artist-bytes">0 / 127 bytes</span></label><input id="artist" name="artist" type="text" placeholder="Sample artist" required maxlength="127" aria-describedby="text-hint artist-bytes" autocomplete="off"></div>
-              <div class="field"><label for="destination">Destination</label><select id="destination" name="playlist"><option value="main">Side A · main</option><option value="secondary">Side B</option></select></div>
-              <button id="add-submit" class="button button-accent" type="submit">Add to the tail +</button>
-            </div><p id="text-hint" class="form-hint">Title & artist: non-empty, up to 127 UTF-8 bytes each. No control characters. Only ASCII edge spaces are trimmed.</p>
+              <div class="field"><label for="destination">Destination</label><select id="destination" name="playlist"><option value="main">Side A</option><option value="secondary">Side B</option></select></div>
+              <button id="add-submit" class="button button-accent" type="submit"><span class="demo-copy">Add record +</span><span class="simulation-copy">Add to the tail +</span></button>
+            </div><p id="text-hint" class="form-hint"><span class="demo-copy">Add a title and artist, then choose a side for your record.</span><span class="simulation-copy">Title & artist: non-empty, up to 127 UTF-8 bytes each. No control characters. Only ASCII edge spaces are trimmed.</span></p>
           </fieldset></form>
         </section>
         <section class="collection" aria-labelledby="collection-heading" aria-busy="true" id="collection">
-          <div class="section-heading"><p class="eyebrow">COMMITTED COLLECTION</p><h2 id="collection-heading">Two sides.</h2></div>
+          <div class="section-heading"><p class="eyebrow"><span class="demo-copy">THE RECORD SHELVES</span><span class="simulation-copy">COMMITTED COLLECTION</span></p><h2 id="collection-heading">Two sides.</h2></div>
           <div class="playlist-grid">
             <section class="playlist-panel main-panel" aria-labelledby="main-heading">
               <header class="panel-heading"><div class="side-marker" aria-hidden="true">A</div><h3 id="main-heading" tabindex="-1">My playlist</h3><span id="main-count" class="count">— tracks</span></header>
@@ -56,7 +76,7 @@
           <button id="merge" class="button button-ink" type="button" disabled>Merge B into A ↗</button>
         </section>
       </div>
-      <section id="pointer-lab" class="pointer-lab" aria-labelledby="lab-heading">
+      <section id="pointer-lab" class="pointer-lab" aria-labelledby="lab-heading" hidden>
         <div class="section-heading"><div><p class="eyebrow">02 / POINTER CANVAS</p><h2 id="lab-heading">Under the sleeve.</h2></div><span class="lab-tag">C-RECORDED REPLAY</span></div>
         <p class="lab-intro">Logical IDs, not memory addresses. Arrows show actual <code>next →</code> and <code>← prev</code> fields. Intermediate records may not form a valid list.</p>
         <section class="replay-inspector" aria-label="Recorded operation replay">
@@ -83,8 +103,9 @@
         </section>
       </section>
     </main>
-    <footer class="site-footer"><span>musiclab / a small lesson in connection</span><span>Session-only C state · silent simulation</span></footer>
+    <footer class="site-footer"><span>musiclab / a small lesson in connection</span><span><span class="demo-copy">Session-only collection · no audio playback</span><span class="simulation-copy">Session-only C state · silent simulation</span></span></footer>
     <noscript><p class="noscript-note">Enable JavaScript to connect to the C playlist API.</p></noscript>
   </div>
+  <div id="guided-cursor" class="guided-cursor" aria-hidden="true" hidden></div>
 </body>
 </html>
