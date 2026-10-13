@@ -567,6 +567,7 @@ function initializeApp() {
     if ($('play-pause')) {
       $('play-pause').disabled = locked || view !== 'demo' || hidden || document.hidden || !audioStatus.available;
       $('play-pause').textContent = audioStatus.playing ? 'Pause' : 'Play';
+      $('play-pause').setAttribute('aria-pressed', String(audioStatus.playing));
       $('play-pause').setAttribute('aria-label', `${audioStatus.playing ? 'Pause' : 'Play'} selected Side A record`);
       $('audio-status').textContent = audioStatus.message;
       $('volume').disabled = view !== 'demo' || !audioStatus.available;
