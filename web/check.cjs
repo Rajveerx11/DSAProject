@@ -443,6 +443,13 @@ async function audioChecks() {
   await player.toggle();
   assert.equal(media.plays, 1);
   assert.equal(latest.playing, true);
+  media.currentTime = 3.25;
+  for (let i = 0; i < 2; i++) player.sync(structuredClone(snapshot));
+  assert.equal(media.src, firstTone, 'Unchanged reset-labelled GET snapshots retain the generated source');
+  assert.equal(media.currentTime, 3.25, 'Refresh must preserve current playback position');
+  assert.equal(latest.playing, true, 'Refresh is not a new reset or a Pause');
+  assert.equal(media.plays, 1, 'Refresh neither restarts nor autoplays');
+  assert(!revoked.includes(firstTone));
   // Unrelated adds/reversals should not restart a still-current record.
   const node = add.playlists[0].nodes.at(-1);
   const attachment = { file, fields: { playlist: 'main', title: node.title, artist: node.artist } };
@@ -457,6 +464,27 @@ async function audioChecks() {
   const localUrl = media.src;
   assert.equal(media.plays, 1, 'Selecting another C record requires another explicit Play');
   await player.toggle();
+  media.currentTime = 2.5;
+  const localLists = [list('main', [1, 2, 3, 6], 6), base[1]];
+  const historicalReset = fixture('reset', localLists, localLists);
+  validateState(historicalReset); // Historical label only, not a fresh-ID C reset.
+  player.sync(historicalReset);
+  assert.equal(media.src, localUrl, 'Historical reset label must not discard a still-owned local file');
+  assert.equal(media.currentTime, 2.5);
+  assert.equal(latest.playing, true);
+  const cachedUrls = [...urls.keys()];
+  const cachedPlays = media.plays;
+  player.pagehide({ persisted: true });
+  assert.equal(media.paused, true, 'BFCache entry pauses audio');
+  assert.equal(media.src, localUrl, 'BFCache retains the native source');
+  assert.deepEqual([...urls.keys()], cachedUrls, 'BFCache retains local and generated URL ownership');
+  player.sync(structuredClone(historicalReset)); // Same authoritative state on pageshow GET.
+  assert.equal(media.src, localUrl);
+  assert.equal(urls.get(localUrl), file);
+  assert.equal(media.currentTime, 2.5);
+  assert.equal(latest.playing, false, 'BFCache return stays paused');
+  assert.equal(media.plays, cachedPlays, 'pageshow refresh cannot autoplay');
+  await player.toggle(); // Only a new user gesture resumes the retained file.
   media.ended = true; media.paused = true; media.dispatchEvent(new Event('ended'));
   assert.equal(latest.playing, false);
   assert.match(latest.message, /Finished/);
@@ -485,8 +513,15 @@ async function audioChecks() {
   await player.toggle();
   assert.equal(latest.playing, false, 'Simulation/hidden/disconnected playback policy blocks Play');
   const playsBefore = media.plays;
-  player.sync(snapshot);
-  assert(revoked.includes(secondaryUrl), 'Reset removes obsolete local associations');
+  player.pagehide({ persisted: true });
+  assert(urls.has(secondaryUrl), 'Cached page retains its secondary-origin local file');
+  const resetLists = [list('main', [101, 102, 103]), list('secondary', [104, 105])];
+  const reset = fixture('reset', resetLists, resetLists); // Actual reset has fresh IDs and an honest replacement trace.
+  validateState(reset);
+  player.sync(reset); // C changed while cached: pageshow GET must reconcile, not restore old IDs.
+  assert(revoked.includes(secondaryUrl), 'Fresh-ID reset removes obsolete local associations, including after BFCache');
+  assert.notEqual(media.src, secondaryUrl);
+  assert.equal(latest.playing, false);
   assert.equal(media.plays, playsBefore, 'Reset/guided synchronization never autoplays');
   allowed = true;
   media.playResult = Promise.reject(Object.assign(new Error('Blocked'), { name: 'NotAllowedError' }));
@@ -505,33 +540,43 @@ async function audioChecks() {
   media.error = { code: 4 }; media.dispatchEvent(new Event('error'));
   assert.equal(latest.available, false);
   assert.match(latest.message, /Cannot decode/);
-  player.sync(fixture('reverse', base, base));
+  player.sync(fixture('reverse', resetLists, resetLists));
   assert.match(latest.message, /Cannot decode/, 'Unrelated C responses retain decode error status');
+  player.sync(structuredClone(reset));
+  assert.equal(latest.available, false, 'Historical reset-labelled refresh must not clear a decode error');
+  assert.match(latest.message, /Cannot decode/);
   player.pause();
   assert.match(latest.message, /Cannot decode/, 'View/lifecycle pause retains an existing decode error');
-  player.dispose();
+  player.pagehide({ persisted: false });
   assert.equal(media.src, '');
-  assert.equal(urls.size, 0, 'Page exit detaches media and revokes every owned URL');
+  assert.equal(urls.size, 0, 'Non-BFCache page exit detaches media and revokes every owned URL');
   player.dispose();
   player.sync(empty);
   assert.equal(latest.available, false);
   assert.match(latest.message, /No selected record/);
   player.sync(snapshot);
-  assert.equal(latest.available, true, 'BFCache return can rebuild sample media without autoplay');
+  assert.equal(latest.available, true, 'A state read after disposal can rebuild sample media without autoplay');
   assert.equal(media.plays, playsBefore + 2, 'Only explicit accepted Play attempts call native play');
-  player.sync(snapshot, { file, fields: { playlist: 'main', title: 'Track 1', artist: 'Sample metadata' } });
+  const oldGeneratedUrl = media.src;
+  media.currentTime = 4;
+  player.sync(reset);
+  assert.notEqual(media.src, oldGeneratedUrl, 'Fresh-ID reset replaces generated media as well as local files');
+  assert(revoked.includes(oldGeneratedUrl));
+  assert.equal(media.currentTime, 0);
+  assert.equal(latest.playing, false);
+  player.sync(reset, { file, fields: { playlist: 'main', title: 'Track 101', artist: 'Sample metadata' } });
   assert.match(latest.message, /could not be attached uniquely/, 'Ambiguous C response cannot attach a file to an assumed ID');
   assert.equal(urls.size, 1, 'Failed attachment leaves only the current generated sample URL');
   const exitedPlay = deferred();
   media.playResult = exitedPlay.promise;
   const exited = player.toggle();
-  player.dispose();
+  player.pagehide({ persisted: false });
   exitedPlay.reject(Object.assign(new Error('Source unloaded'), { name: 'AbortError' }));
   await exited;
   assert.equal(latest.available, false);
   assert.equal(latest.playing, false, 'Page exit invalidates pending native Play');
   assert.equal(urls.size, 0);
-  console.log('PASS: valid audible bounded PCM/WAV, explicit playback policy, main/secondary C-ID file association, selection/deletion/reset, ended/blocked/error/cancelled Play, blob revocation and lifecycle rebuild. Native media doubles only; actual browser decoding remains integration-owned.');
+  console.log('PASS: valid audible bounded PCM/WAV, explicit playback policy, main/secondary C-ID file association, selection/deletion/reset, ended/blocked/error/cancelled Play, historical reset-labelled refresh, fresh-ID reset, BFCache retention/paused return, changed-while-cached pruning and real-exit blob revocation. Native media doubles only; actual browser decoding remains integration-owned.');
 }
 (async () => {
   await controllerChecks();

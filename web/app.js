@@ -330,11 +330,11 @@ function createAudioPlayer(audio, canPlay, update, urls = URL) {
     emit();
   }
   function sync(result, attachment = null) {
-    if (result.operation.action === 'reset') clearSource();
+    // The operation is historical on GET; fresh C IDs/membership identify a real reset.
     const nodes = new Map(result.playlists.flatMap(list => list.nodes.map(node => [node.id, node])));
     const obsolete = [...local].filter(([id, media]) => {
       const node = nodes.get(id);
-      return result.operation.action === 'reset' || !node || node.title !== media.title || node.artist !== media.artist;
+      return !node || node.title !== media.title || node.artist !== media.artist;
     });
     if (obsolete.some(([, media]) => media === source)) clearSource();
     for (const [id, media] of obsolete) { urls.revokeObjectURL(media.url); local.delete(id); }
@@ -406,7 +406,8 @@ function createAudioPlayer(audio, canPlay, update, urls = URL) {
     notice = source.filename ? 'Cannot decode this local audio file; choose another record or supported file' : 'Cannot decode the generated sample tone in this browser';
     emit();
   });
-  return { sync, toggle, pause, dispose };
+  const pagehide = event => event.persisted ? pause() : dispose();
+  return { sync, toggle, pause, dispose, pagehide };
 }
 
 function initializeApp() {
@@ -1077,10 +1078,10 @@ function initializeApp() {
   navigate();
   const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => drawEdges()) : null;
   observer?.observe($('diagrams'));
-  window.addEventListener('pagehide', () => {
+  window.addEventListener('pagehide', event => {
     guided.stop('Stopped on page exit. An in-flight C action may have committed; refresh state on return.');
     hidden = true;
-    player?.dispose();
+    player?.pagehide(event);
     pause();
     cancelAnimations();
     clearTimeout(requestTimer);
