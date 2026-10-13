@@ -314,12 +314,26 @@ function initializeApp() {
         ? [...document.querySelectorAll('button[data-action]')].find(button => button.dataset.action === fields.action && button.dataset.id === fields.id && button.dataset.playlist === fields.playlist)
         : $(fields.action === 'add' ? 'add-submit' : fields.action === 'reverse' ? 'reverse-main' : fields.action);
       guidedTarget?.classList.add('guided-target');
+      // Pan only the bounded operation pane: keep Start/Pause and the canvas visible.
+      const desk = document.querySelector('.operation-desk');
+      if (guidedTarget && desk.contains(guidedTarget)) {
+        // A row may be clipped by its own playlist as well as the outer desk.
+        for (const pane of [guidedTarget.closest('.track-list'), desk]) {
+          if (!pane || pane.scrollHeight <= pane.clientHeight) continue;
+          const box = guidedTarget.getBoundingClientRect();
+          const viewport = pane.getBoundingClientRect();
+          pane.scrollTop += box.top - viewport.top - (viewport.height - box.height) / 2;
+        }
+      }
       const cursor = $('guided-cursor');
       if (cursor && guidedTarget && !motion.matches) {
         const box = guidedTarget.getBoundingClientRect();
-        cursor.style.left = `${box.left + box.width / 2}px`;
-        cursor.style.top = `${box.top + box.height / 2}px`;
+        const left = box.left + box.width / 2, top = box.top + box.height / 2;
+        const oldLeft = Number.parseFloat(cursor.style.left), oldTop = Number.parseFloat(cursor.style.top);
+        cursor.style.left = `${left}px`;
+        cursor.style.top = `${top}px`;
         cursor.hidden = false;
+        if (Number.isFinite(oldLeft) && Number.isFinite(oldTop)) animate(cursor, [{ transform: `translate(${oldLeft - left}px, ${oldTop - top}px)` }, { transform: 'translate(0, 0)' }]);
       }
       await wait(650, !motion.matches);
       guidedTarget?.classList.add('guided-pressed');
@@ -351,6 +365,17 @@ function initializeApp() {
   }
   function playlist(id) { return state?.playlists.find(list => list.id === id); }
   function currentTrack() { return playlist('main')?.nodes.find(node => node.id === playlist('main').current); }
+  function operationMessage() {
+    if (view === 'simulation') return state.operation.message;
+    const action = state.operation.action;
+    const messages = { add: 'Record added.', delete: 'Record removed.', select: 'Record selected.', reverse: 'Playlist order reversed.', merge: state.operation.trace.events.length ? 'Playlists merged.' : 'Nothing to merge.', reset: 'Sample playlists restored.' };
+    if (action === 'next' || action === 'previous') {
+      if (!currentTrack()) return 'Side A is empty.';
+      if (!state.operation.trace.events.length) return action === 'next' ? 'Reached the last record.' : 'Reached the first record.';
+      return `Selected ${currentTrack().title}.`;
+    }
+    return messages[action] || 'Playlists ready.';
+  }
   function feedback(message, error = false) {
     $('feedback').textContent = message;
     $('feedback').parentElement.classList.toggle('is-error', error);
@@ -441,7 +466,7 @@ function initializeApp() {
         select.dataset.playlist = list.id;
         select.dataset.id = String(node.id);
         select.dataset.focusKey = `select-${node.id}`;
-        select.setAttribute('aria-label', `Select ${node.title}, ${node.artist}, node ${node.id} in ${list.name}`);
+        select.setAttribute('aria-label', `Select ${node.title}, ${node.artist}${view === 'simulation' ? `, node ${node.id}` : ''} in ${list.name}`);
         select.setAttribute('aria-pressed', String(isCurrent));
         select.append(element('span', 'track-title', node.title), element('span', 'track-artist', node.artist), element('span', 'track-meta', `${pointer(node.id)} · SAMPLE LABEL${isCurrent ? ' · CURRENT' : ''}`));
         const remove = element('button', 'button delete-track', 'Delete');
@@ -450,7 +475,7 @@ function initializeApp() {
         remove.dataset.playlist = list.id;
         remove.dataset.id = String(node.id);
         remove.dataset.focusKey = `delete-${node.id}`;
-        remove.setAttribute('aria-label', `Delete ${node.title} from ${list.name}, node ${node.id}`);
+        remove.setAttribute('aria-label', `Delete ${node.title} from ${list.name}${view === 'simulation' ? `, node ${node.id}` : ''}`);
         row.append(number, select, remove);
         return row;
       });
@@ -662,6 +687,17 @@ function initializeApp() {
       }
       if (box.top < viewport.top || box.bottom > viewport.bottom) scroll.scrollTop += box.top - viewport.top - (viewport.height - box.height) / 2;
     }
+    if (guided.active()) {
+      const lab = $('pointer-lab');
+      if (projection.final) lab.scrollTop = 0;
+      else if (active?.isConnected && lab.scrollHeight > lab.clientHeight) {
+        const bounds = lab.getBoundingClientRect();
+        const top = bounds.top + lab.querySelector('.replay-inspector').getBoundingClientRect().height + 8;
+        const bottom = Math.min(bounds.bottom, innerHeight);
+        const box = active.getBoundingClientRect();
+        if (box.top < top || box.bottom > bottom) lab.scrollTop += box.top - top - (bottom - top - box.height) / 2;
+      }
+    }
   }
 
   function renderReplay(withMotion = false) {
@@ -751,7 +787,7 @@ function initializeApp() {
         renderReplay();
       } else if (fields) startReplay();
       else { frame = lastFrame(); renderReplay(); }
-      feedback(state.operation.message);
+      feedback(operationMessage());
       return true;
     } catch (error) {
       if (!error.statePreserved) connected = false;
@@ -855,7 +891,10 @@ function initializeApp() {
       if (id === view) anchor?.setAttribute('aria-current', 'page');
       else anchor?.removeAttribute('aria-current');
     }
-    if (state) renderReplay();
+    if (state) {
+      renderTracks(); renderReplay();
+      if (connected && !$('feedback').parentElement.classList.contains('is-error')) feedback(operationMessage());
+    }
     updateControls();
   }
   window.addEventListener('hashchange', navigate);

@@ -198,14 +198,11 @@ assert.equal(new Set(ids).size, ids.length, 'DOM IDs unique');
 for (const id of ['next', 'previous', 'reset', 'refresh', 'add-submit', 'title', 'artist', 'destination', 'main-tracks', 'secondary-tracks', 'diagrams', 'operation-message', 'replay-auto', 'replay-pause', 'replay-previous', 'replay-next', 'replay-replay', 'replay-finish', 'replay-speed']) assert(ids.includes(id), `Accessible control ${id} exists`);
 const guidedIds = ['view-demo', 'view-simulation', 'guided-demo', 'guided-start', 'guided-pause', 'guided-stop', 'guided-speed', 'guided-status', 'guided-progress', 'guided-reset-note', 'guided-cursor'];
 const missing = guidedIds.filter(id => !ids.includes(id));
-if (missing.length === guidedIds.length) console.log(`SKIP: guided DOM integration absent in controller worktree (${missing.join(', ')}). Manager must verify integrated HTML/CSS and browser behavior.`);
-else {
-  assert.deepEqual(missing, [], 'Integrated frontend must provide the full guided DOM contract');
-  assert(/<body[^>]*data-view="demo"/.test(html), 'Default HTML view is demo');
-  for (const id of ['pointer-lab', 'guided-demo', 'guided-cursor']) {
-    const tag = html.match(new RegExp(`<[^>]*\\bid="${id}"[^>]*>`))?.[0];
-    assert(tag && /\bhidden\b/.test(tag), `${id} starts hidden`);
-  }
+assert.deepEqual(missing, [], 'Integrated frontend must provide the full guided DOM contract');
+assert(/<body[^>]*data-view="demo"/.test(html), 'Default HTML view is demo');
+for (const id of ['pointer-lab', 'guided-demo', 'guided-cursor']) {
+  const tag = html.match(new RegExp(`<[^>]*\\bid="${id}"[^>]*>`))?.[0];
+  assert(tag && /\bhidden\b/.test(tag), `${id} starts hidden`);
 }
 
 assert.equal(routeView('', 'simulation'), 'demo');
