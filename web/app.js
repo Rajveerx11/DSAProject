@@ -147,6 +147,126 @@ function eventLabel(event) {
 }
 function shouldAutoPlay(count, reducedMotion, enabled) { return enabled && !reducedMotion && count > 0 && count <= AUTO_LIMIT; }
 
+// Unknown anchors (including the skip link) preserve the established view.
+function routeView(hash, current = 'demo') {
+  return hash === '#simulation' ? 'simulation' : hash === '#demo' || !hash ? 'demo' : current;
+}
+function addedTrackId(result) {
+  const before = new Set(result.operation.trace.before.flatMap(list => list.nodes.map(node => node.id)));
+  const added = result.playlists.find(list => list.id === 'main').nodes.filter(node => !before.has(node.id));
+  if (added.length !== 1) throw new Error('C did not return exactly one newly added record. Guided demonstration halted.');
+  return added[0].id;
+}
+
+// One run, one interruptible wait. Cancellation never aborts or retries a C mutation.
+function createGuidedController({ canStart, request, prepare, replay, update }) {
+  const steps = ['reset', 'add', 'next', 'previous', 'select', 'delete', 'reverse', 'merge'];
+  const explanations = [
+    'Reset both playlists to C sample data.', 'Append a sample record to Side A.',
+    'Move current to its next record.', 'Move current back to its previous record.',
+    'Search for and select the newly added C ID.', 'Search for and delete that same record.',
+    'Reverse Side A; current remains the same record.', 'Splice Side B into Side A; Side B becomes empty.'
+  ];
+  let run = null;
+  let status = 'idle';
+  let completed = 0;
+  let message = 'Ready. Start resets both playlists to sample data.';
+  let speed = 1;
+  const cancelled = new Error('Guided run cancelled');
+  const active = () => run !== null;
+  const publish = () => update({ status, completed, message, active: active() });
+  function suspendWait() {
+    const wait = run?.wait;
+    if (!wait || wait.timer === null) return;
+    clearTimeout(wait.timer);
+    wait.remaining = Math.max(0, wait.remaining - (performance.now() - wait.started) * (wait.scaled ? speed : 1));
+    wait.timer = null;
+  }
+  function scheduleWait() {
+    const wait = run?.wait;
+    if (!wait || status === 'paused') return;
+    wait.started = performance.now();
+    wait.timer = setTimeout(() => { run.wait = null; wait.resolve(); }, wait.remaining / (wait.scaled ? speed : 1));
+  }
+  async function start() {
+    if (active() || !canStart()) return false;
+    const token = { wait: null };
+    run = token;
+    status = 'running';
+    completed = 0;
+    let addedId;
+    const checkpoint = () => { if (run !== token) throw cancelled; };
+    const wait = (ms, scaled = true) => {
+      checkpoint();
+      return new Promise((resolve, reject) => {
+        token.wait = { remaining: ms, scaled, resolve, reject, timer: null, started: 0 };
+        scheduleWait();
+      }).then(checkpoint);
+    };
+    try {
+      for (const [index, action] of steps.entries()) {
+        message = `${index + 1} / 8 · ${explanations[index]}`;
+        publish();
+        await wait(0);
+        const fields = { action };
+        if (action !== 'reset') fields.playlist = 'main';
+        if (action === 'add') Object.assign(fields, { title: 'Guided Groove', artist: 'Sample session' });
+        if (action === 'select' || action === 'delete') fields.id = String(addedId);
+        if (action === 'merge') fields.source = 'secondary';
+        await prepare(fields, { wait });
+        await wait(0); // Pause during presentation must not dispatch a request.
+        const result = await request(fields);
+        checkpoint(); // A stopped in-flight POST may still commit; never replay or advance it.
+        if (!result) throw new Error('C request failed. Refresh state before explicitly restarting.');
+        if (action === 'add') addedId = addedTrackId(result);
+        await wait(0); // Pause while POST was in flight holds the returned replay.
+        await replay(result, { wait });
+        await wait(0);
+        completed++;
+        publish();
+      }
+      run = null;
+      status = 'complete';
+      message = 'Complete · 8 C actions and their recorded replays finished.';
+      publish();
+      return true;
+    } catch (error) {
+      if (run !== token) return false;
+      run = null;
+      status = 'error';
+      message = error.message || 'Guided demonstration failed. Refresh state before restarting.';
+      publish();
+      return false;
+    }
+  }
+  return {
+    start, active,
+    paused: () => status === 'paused',
+    pause() {
+      if (!active()) return;
+      if (status === 'paused') { status = 'running'; scheduleWait(); }
+      else { suspendWait(); status = 'paused'; }
+      publish();
+    },
+    stop(detail = 'Stopped. Accepted C actions remain committed; an in-flight request may still complete.') {
+      if (!active()) return;
+      suspendWait();
+      const wait = run.wait;
+      run = null;
+      wait?.reject(cancelled);
+      status = 'stopped';
+      message = detail;
+      publish();
+    },
+    setSpeed(value) {
+      if (![0.5, 1, 2, 4].includes(Number(value))) return;
+      suspendWait();
+      speed = Number(value);
+      scheduleWait();
+    }
+  };
+}
+
 function initializeApp() {
   const $ = id => document.getElementById(id);
   const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -169,6 +289,59 @@ function initializeApp() {
   let svg = null;
   const lanes = new Map();
   const headers = new Map();
+  let view = 'demo';
+  let guidedTarget = null;
+  let guidedStatus = { status: 'idle', completed: 0, message: 'Ready. Start resets both playlists to sample data.', active: false };
+  function clearGuidedTarget() {
+    guidedTarget?.classList.remove('guided-target', 'guided-pressed');
+    guidedTarget = null;
+    if ($('guided-cursor')) $('guided-cursor').hidden = true;
+  }
+  const guided = createGuidedController({
+    canStart: () => Boolean($('guided-demo') && view === 'simulation' && !pending && connected && state && !hidden && !document.hidden),
+    request: async fields => {
+      const accepted = await requestState(fields, true);
+      if (!accepted) throw new Error($('feedback').textContent);
+      return state;
+    },
+    prepare: async (fields, { wait }) => {
+      clearGuidedTarget();
+      if (fields.action === 'add') {
+        for (const id of ['title', 'artist']) { $(id).value = fields[id]; validateField(id); }
+        $('destination').value = fields.playlist;
+      }
+      guidedTarget = fields.id
+        ? [...document.querySelectorAll('button[data-action]')].find(button => button.dataset.action === fields.action && button.dataset.id === fields.id && button.dataset.playlist === fields.playlist)
+        : $(fields.action === 'add' ? 'add-submit' : fields.action === 'reverse' ? 'reverse-main' : fields.action);
+      guidedTarget?.classList.add('guided-target');
+      const cursor = $('guided-cursor');
+      if (cursor && guidedTarget && !motion.matches) {
+        const box = guidedTarget.getBoundingClientRect();
+        cursor.style.left = `${box.left + box.width / 2}px`;
+        cursor.style.top = `${box.top + box.height / 2}px`;
+        cursor.hidden = false;
+      }
+      await wait(650, !motion.matches);
+      guidedTarget?.classList.add('guided-pressed');
+      await wait(180, !motion.matches);
+    },
+    replay: async (result, { wait }) => {
+      if (!motion.matches) {
+        const interval = Math.min(600, 12000 / lastFrame());
+        while (frame < lastFrame()) { await wait(interval); setFrame(frame + 1, !motion.matches); }
+      } else finish();
+      // Readable explanations remain even without animation or a nonempty trace.
+      await wait(1100, !motion.matches);
+      cancelAnimations();
+      drawEdges();
+      clearGuidedTarget();
+    },
+    update: snapshot => {
+      guidedStatus = snapshot;
+      if (!snapshot.active) { clearGuidedTarget(); cancelAnimations(); drawEdges(); }
+      updateControls();
+    }
+  });
 
   function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -184,7 +357,8 @@ function initializeApp() {
   }
   function animate(node, keyframes, options = {}) {
     if (motion.matches || hidden || !node.animate) return;
-    const animation = node.animate(keyframes, { duration: Math.min(350, 350 / Number($('replay-speed').value)), easing: 'ease-out', ...options });
+    const speedControl = guided.active() ? $('guided-speed') : $('replay-speed');
+    const animation = node.animate(keyframes, { duration: Math.min(350, 350 / Number(speedControl.value)), easing: 'ease-out', ...options });
     animations.add(animation);
     if (node.matches('.node-card, .current-marker') && geometryFrame === null) {
       geometryFrame = requestAnimationFrame(redrawGeometry);
@@ -211,12 +385,12 @@ function initializeApp() {
 
   function updateControls() {
     const replayFocus = document.activeElement;
-    const locked = pending || !connected || !state;
-    // Keep editable fields focused while pending. Submission alone is locked.
-    $('add-fields').disabled = !connected || !state;
+    const locked = pending || !connected || !state || guided.active();
+    // Keep editable fields focused during manual requests; guided fields are presentation only.
+    $('add-fields').disabled = !connected || !state || guided.active();
     $('add-submit').disabled = locked || state.playlists.reduce((sum, list) => sum + list.size, 0) >= SONG_LIMIT;
     $('reset').disabled = locked;
-    $('refresh').disabled = pending;
+    $('refresh').disabled = pending || guided.active();
     for (const id of ['previous', 'next']) $(id).disabled = locked || !currentTrack();
     $('merge').disabled = locked || !playlist('secondary')?.size;
     document.querySelectorAll('.reverse-button').forEach(button => { button.disabled = locked || !playlist(button.dataset.playlist)?.size; });
@@ -226,14 +400,26 @@ function initializeApp() {
     $('connection').textContent = pending ? 'C request pending…' : connected ? 'C state connected' : 'C API unavailable';
     $('connection').classList.toggle('connected', connected && !pending);
     $('connection').classList.toggle('disconnected', !connected && !pending);
-    const unavailable = !state || pending;
+    if ($('guided-demo')) {
+      $('guided-demo').dataset.status = guidedStatus.status;
+      $('guided-status').textContent = `${guidedStatus.status === 'paused' ? 'Paused · ' : ''}${guidedStatus.message}`;
+      $('guided-progress').max = 8;
+      $('guided-progress').value = guidedStatus.completed;
+      $('guided-start').disabled = locked || hidden || document.hidden || view !== 'simulation';
+      $('guided-pause').disabled = !guided.active();
+      $('guided-pause').textContent = guided.paused() ? 'Resume' : 'Pause';
+      $('guided-stop').disabled = !guided.active();
+    }
+    const unavailable = !state || pending || guided.active();
+    $('replay-auto').disabled = guided.active();
+    $('replay-speed').disabled = guided.active();
     $('replay-pause').textContent = running ? 'Pause' : 'Continue';
     $('replay-pause').disabled = unavailable || frame === lastFrame() || motion.matches;
     $('replay-previous').disabled = unavailable || frame === 0;
     $('replay-next').disabled = unavailable || frame === lastFrame();
     $('replay-replay').disabled = unavailable || !state.operation.trace.events.length;
     $('replay-finish').disabled = unavailable || frame === lastFrame();
-    if (document.activeElement === document.body && replayFocus?.matches('button[id^="replay-"]') && replayFocus.disabled) {
+    if (!guided.active() && view === 'simulation' && document.activeElement === document.body && replayFocus?.matches('button[id^="replay-"]') && replayFocus.disabled) {
       const fallback = $('replay-replay').disabled ? $('replay-auto') : $('replay-replay');
       fallback.focus({ preventScroll: true });
     }
@@ -320,7 +506,7 @@ function initializeApp() {
     return { x: box.left - origin.left, y: box.top - origin.top, width: box.width, height: box.height };
   }
   function drawEdges(withMotion = false) {
-    if (!canvas || !projection || hidden) return;
+    if (!canvas || !projection || hidden || view !== 'simulation') return;
     const width = canvas.scrollWidth;
     const height = canvas.scrollHeight;
     svg.setAttribute('width', width);
@@ -480,10 +666,11 @@ function initializeApp() {
 
   function renderReplay(withMotion = false) {
     if (!state) return;
-    renderGraph(withMotion && !motion.matches);
+    if (view === 'simulation') renderGraph(withMotion && !motion.matches);
+    else { cancelAnimations(); projection = projectTrace(state, frame); }
     const count = state.operation.trace.events.length;
     const committed = frame === count + 1;
-    $('replay-status').textContent = !connected ? 'Last received snapshot · disconnected' : committed ? 'Committed C state · final snapshot' : `Historical replay · ${running ? 'playing' : 'paused'} · C already committed`;
+    $('replay-status').textContent = !connected ? 'Last received snapshot · disconnected' : committed ? 'Committed C state · final snapshot' : `Historical replay · ${(guided.active() ? !guided.paused() : running) ? 'playing' : 'paused'} · C already committed`;
     $('replay-progress').textContent = committed ? `${count} events · final` : `Frame ${frame} / ${count} events`;
     $('replay-meter').max = count + 1;
     $('replay-meter').value = frame;
@@ -510,6 +697,7 @@ function initializeApp() {
     }, interval);
   }
   function startReplay() {
+    if (view !== 'simulation' || document.hidden) { finish(); return; }
     pause();
     cancelAnimations();
     const count = state.operation.trace.events.length;
@@ -519,8 +707,8 @@ function initializeApp() {
     schedule();
   }
 
-  async function requestState(fields = null) {
-    if (pending || hidden) return false;
+  async function requestState(fields = null, guidedRequest = false) {
+    if (pending || hidden || document.hidden || (guided.active() && !guidedRequest)) return false;
     finish(); // No queued operations: complete old historical playback before asking C again.
     const focusTarget = document.activeElement;
     const focusKey = focusTarget?.dataset.focusKey;
@@ -557,7 +745,11 @@ function initializeApp() {
       state = result;
       connected = true;
       renderTracks();
-      if (fields) startReplay();
+      if (guidedRequest) {
+        pause();
+        frame = guided.active() && !motion.matches && state.operation.trace.events.length ? 0 : lastFrame();
+        renderReplay();
+      } else if (fields) startReplay();
       else { frame = lastFrame(); renderReplay(); }
       feedback(state.operation.message);
       return true;
@@ -576,7 +768,7 @@ function initializeApp() {
       pending = false;
       updateControls();
       document.removeEventListener('focusin', watchFocus);
-      if (!hidden && !focusMoved && (document.activeElement === document.body || document.activeElement === focusTarget)) {
+      if (!guidedRequest && !hidden && !focusMoved && (document.activeElement === document.body || document.activeElement === focusTarget)) {
         let target = focusKey ? [...document.querySelectorAll('[data-focus-key]')].find(button => button.dataset.focusKey === focusKey) : focusTarget;
         if (!target?.isConnected || target.disabled || target.closest('fieldset:disabled')) {
           target = [...document.querySelectorAll('.track-select')].find(button => !button.disabled && button.dataset.focusKey === `select-${playlist(focusList)?.current}`) || $(`${focusList}-heading`);
@@ -597,7 +789,7 @@ function initializeApp() {
   }
   $('add-form').addEventListener('submit', async event => {
     event.preventDefault();
-    if (pending || !connected) return;
+    if (pending || !connected || guided.active()) return;
     const titleValid = validateField('title');
     const artistValid = validateField('artist');
     if (!titleValid || !artistValid) { $('add-form').reportValidity(); return; }
@@ -614,7 +806,7 @@ function initializeApp() {
   for (const id of LIST_IDS) {
     $(`${id}-tracks`).addEventListener('click', event => {
       const button = event.target.closest('button[data-action]');
-      if (!button || button.disabled || pending || !connected) return;
+      if (!button || button.disabled || pending || !connected || guided.active()) return;
       void requestState({ action: button.dataset.action, playlist: button.dataset.playlist, id: button.dataset.id });
     });
   }
@@ -623,24 +815,59 @@ function initializeApp() {
   $('merge').addEventListener('click', () => void requestState({ action: 'merge', playlist: 'main', source: 'secondary' }));
   $('reset').addEventListener('click', () => void requestState({ action: 'reset' }));
   $('refresh').addEventListener('click', () => void requestState());
-  $('replay-pause').addEventListener('click', () => {
+  // Guard at dispatch as well as disabling DOM controls; replay never competes with a guide.
+  const manualReplay = handler => () => { if (!pending && !guided.active() && state) handler(); };
+  $('replay-pause').addEventListener('click', manualReplay(() => {
     if (running) pause();
     else { running = true; schedule(); }
     renderReplay();
-  });
-  $('replay-previous').addEventListener('click', () => { pause(); setFrame(frame - 1); });
-  $('replay-next').addEventListener('click', () => { pause(); setFrame(frame + 1); });
-  $('replay-replay').addEventListener('click', startReplay);
-  $('replay-finish').addEventListener('click', () => finish(true));
-  $('replay-auto').addEventListener('change', () => {
+  }));
+  $('replay-previous').addEventListener('click', manualReplay(() => { pause(); setFrame(frame - 1); }));
+  $('replay-next').addEventListener('click', manualReplay(() => { pause(); setFrame(frame + 1); }));
+  $('replay-replay').addEventListener('click', manualReplay(startReplay));
+  $('replay-finish').addEventListener('click', manualReplay(() => finish(true)));
+  $('replay-auto').addEventListener('change', manualReplay(() => {
     if (!$('replay-auto').checked) { pause(); renderReplay(); }
-    else if (state && frame < lastFrame() && shouldAutoPlay(state.operation.trace.events.length, motion.matches, true)) { running = true; renderReplay(); schedule(); }
+    else if (frame < lastFrame() && shouldAutoPlay(state.operation.trace.events.length, motion.matches, true)) { running = true; renderReplay(); schedule(); }
+  }));
+  $('replay-speed').addEventListener('change', manualReplay(() => { cancelAnimations(); drawEdges(); if (running) schedule(); }));
+  $('guided-start')?.addEventListener('click', () => {
+    if (guided.active()) return;
+    finish(); // Settle any manual replay before the first guided presentation/wait.
+    guided.setSpeed($('guided-speed').value);
+    void guided.start();
   });
-  $('replay-speed').addEventListener('change', () => { cancelAnimations(); drawEdges(); if (running) schedule(); });
-  motion.addEventListener('change', () => { if (motion.matches) finish(); });
+  $('guided-pause')?.addEventListener('click', () => { guided.pause(); cancelAnimations(); renderReplay(); });
+  $('guided-stop')?.addEventListener('click', () => { guided.stop(); finish(); });
+  $('guided-speed')?.addEventListener('change', () => { guided.setSpeed($('guided-speed').value); cancelAnimations(); drawEdges(); });
+  motion.addEventListener('change', () => {
+    if (motion.matches) { if ($('guided-cursor')) $('guided-cursor').hidden = true; finish(); }
+  });
+  function navigate() {
+    const nextView = routeView(window.location.hash, view);
+    if (view !== nextView) { guided.stop('Stopped on view exit. Accepted C actions remain committed; pending requests may still complete.'); finish(); }
+    view = nextView;
+    document.body.dataset.view = view;
+    $('pointer-lab').hidden = view !== 'simulation';
+    if ($('guided-demo')) $('guided-demo').hidden = view !== 'simulation';
+    for (const id of ['demo', 'simulation']) {
+      const anchor = $(`view-${id}`);
+      if (id === view) anchor?.setAttribute('aria-current', 'page');
+      else anchor?.removeAttribute('aria-current');
+    }
+    if (state) renderReplay();
+    updateControls();
+  }
+  window.addEventListener('hashchange', navigate);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { guided.stop('Stopped while the page was hidden. Accepted C actions remain committed; pending requests may still complete.'); finish(); }
+    updateControls();
+  });
+  navigate();
   const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => drawEdges()) : null;
   observer?.observe($('diagrams'));
   window.addEventListener('pagehide', () => {
+    guided.stop('Stopped on page exit. An in-flight C action may have committed; refresh state on return.');
     hidden = true;
     pause();
     cancelAnimations();
@@ -657,4 +884,4 @@ function initializeApp() {
 }
 
 if (typeof document !== 'undefined') initializeApp();
-if (typeof module !== 'undefined') module.exports = { trimSongText, textProblem, pointer, validateState, createProjection, applyEvent, projectTrace, eventLabel, shouldAutoPlay, TRACE_LIMIT, AUTO_LIMIT };
+if (typeof module !== 'undefined') module.exports = { trimSongText, textProblem, pointer, validateState, createProjection, applyEvent, projectTrace, eventLabel, shouldAutoPlay, routeView, addedTrackId, createGuidedController, TRACE_LIMIT, AUTO_LIMIT };
