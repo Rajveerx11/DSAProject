@@ -190,18 +190,46 @@ body[data-view="demo"] .panel-footer { justify-content:flex-end; padding:12px; m
 body[data-view="demo"] .reverse-button { font-size:11px; }
 body[data-view="demo"] #merge { width:auto; min-width:210px; margin-top:20px; }
 
-/* A top-of-desk session card keeps Start ahead of even the longest collection. */
-.guided-demo { grid-column:1 / -1; min-width:0; display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.1fr); gap:28px; padding:20px 24px; border:1px solid var(--line); border-top:3px solid var(--accent); background:var(--sheet); }
-.guided-intro h2 { margin:4px 0 8px; }
-.guided-description,.guided-caption { font-size:12px; color:var(--muted); }
-.guided-reset-note { margin-top:12px; font-size:12px; padding-left:10px; border-left:2px solid var(--accent); color:var(--accent-dark); }
-.guided-reset-note strong { font-weight:650; }
-.guided-session { align-self:center; min-width:0; }
-.guided-controls { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
-.guided-controls .button,.guided-controls select { min-height:44px; }
-.guided-controls .speed-label { margin-left:auto; }
-.guided-status { margin-top:16px; font-size:13px; overflow-wrap:anywhere; }
-#guided-progress { height:6px; margin-block:10px; }
+/* Demo previews are explicit; Simulation has no visible audio controls. */
+.demo-audio { display:none; }
+body[data-view="demo"] .demo-audio { display:block; }
+body[data-view="demo"] #play-pause { display:inline-flex; flex:1.3; min-height:48px; font-size:15px; }
+.audio-preview { margin-top:12px; }
+#audio-status { font-size:12px; color:var(--muted); overflow-wrap:anywhere; }
+.volume-label { display:flex; align-items:center; gap:12px; margin-top:10px; font-size:12px; }
+#volume { width:150px; min-width:0; min-height:32px; margin:0; accent-color:var(--accent); cursor:pointer; }
+.audio-file-field { grid-column:1 / -1; }
+#audio-file { display:block; width:100%; min-width:0; padding:8px; border:1px solid var(--line); background:var(--sheet); font-size:12px; }
+#audio-file::file-selector-button { min-height:36px; margin-right:10px; padding:6px 10px; border:1px solid var(--ink); background:var(--paper); color:var(--ink); cursor:pointer; }
+
+/* Keep the tour small and the canvas generous; long controls live below it. */
+.guided-demo { grid-column:1 / -1; min-width:0; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px 16px; padding:10px 12px; border:1px solid var(--line); border-top:3px solid var(--accent); background:var(--sheet); }
+.guided-intro { display:flex; align-items:center; gap:12px; min-width:0; }
+.guided-intro h2 { font-size:20px; white-space:nowrap; }
+.guided-reset-note { font-size:11px; line-height:1.4; color:var(--accent-dark); }
+.guided-controls { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.guided-controls .button,.guided-controls select { min-height:36px; }
+.guided-readout { grid-column:1 / -1; display:flex; align-items:center; gap:12px; min-width:0; }
+.guided-status { flex:1; min-width:0; font-size:12px; line-height:1.4; overflow-wrap:anywhere; }
+#guided-progress { flex:0 0 120px; width:120px; height:4px; margin:0; }
+.replay-details,.operation-details { margin-top:8px; border-top:1px solid var(--line); }
+summary { min-height:40px; padding:9px 4px; cursor:pointer; font-size:12px; }
+summary:hover { color:var(--accent-dark); }
+.replay-details .replay-controls { padding:4px 0 12px; }
+.operation-details .operation { padding:12px; }
+.operation-details #replay-note { padding:8px 4px; margin:0; }
+body[data-view="simulation"] .pointer-lab > .section-heading { margin-bottom:4px; }
+body[data-view="simulation"] #lab-heading { font-size:22px; }
+body[data-view="simulation"] .lab-tag { padding:4px 6px; }
+body[data-view="simulation"] .lab-intro { font-size:11px; line-height:1.4; margin-bottom:6px; }
+body[data-view="simulation"] .replay-inspector { padding:8px 0 6px; }
+body[data-view="simulation"] .replay-state { gap:8px; margin-bottom:4px; font-size:10px; flex-wrap:wrap; }
+body[data-view="simulation"] .active-assignment { font-size:11px; line-height:1.4; min-height:0; }
+body[data-view="simulation"] #replay-counts { font-size:9px; line-height:1.4; margin-top:4px; }
+body[data-view="simulation"] #replay-meter { height:3px; margin:6px 0 0; }
+body[data-view="simulation"] #diagrams { margin:8px 0 0; }
+body[data-view="simulation"] .diagram-note { font-size:9px; padding:4px 0; }
+body[data-view="simulation"] .node-scroll { min-height:220px; }
 .guided-demo[data-status="error"] .guided-status { color:var(--accent-dark); }
 .guided-demo[data-status="complete"] .guided-status { color:#426943; }
 .guided-demo[data-status="paused"] { border-top-color:var(--ink); }
@@ -214,19 +242,22 @@ body[data-view="demo"] #merge { width:auto; min-width:210px; margin-top:20px; }
 @media (max-width:760px) { .page-shell { padding:0 16px; } .masthead { min-height:78px; gap:10px; } .wordmark { font-size:28px; } .header-tools { gap:6px; flex-direction:column-reverse; align-items:flex-end; } .connection { font-size:9px; } .header-tools .button { min-height:34px; font-size:10px; } .workspace { display:flex; flex-direction:column; gap:24px; padding-top:20px; } .operation-desk,.pointer-lab { width:100%; } .pointer-lab { position:static; max-height:none; overflow:visible; } .replay-inspector { position:static; } .playlist-grid { grid-template-columns:1fr 1fr; } .panel-heading { flex-wrap:wrap; } .panel-footer { flex-wrap:wrap; } .track-list { max-height:180px; } .node-scroll { max-height:510px; } .pointer-canvas { padding-inline:16px; } .site-footer { flex-direction:column; } }
 @media (max-width:440px) { .playlist-grid { grid-template-columns:1fr; } .lab-tag { font-size:8px; } .replay-controls .button { min-height:42px; } }
 @media (min-width:761px) {
-  body[data-view="simulation"] .workspace { height:calc(100dvh - 120px); min-height:560px; grid-template-rows:auto minmax(0,1fr); }
+  body[data-view="simulation"] .workspace { height:calc(100dvh - 100px); min-height:0; grid-template-rows:auto minmax(0,1fr); gap:12px 20px; padding:12px 0 16px; }
   body[data-view="simulation"] :is(.operation-desk,.pointer-lab) { position:static; height:100%; max-height:100%; overflow:auto; overscroll-behavior:contain; scrollbar-gutter:stable; }
   body[data-view="simulation"] .operation-desk { padding-bottom:12px; }
 }
-@media (max-width:1050px) { .masthead { gap:20px; } .guided-demo { gap:20px; } .guided-controls .speed-label { margin-left:0; } }
+@media (max-width:1050px) { .masthead { gap:20px; } .guided-intro { flex-direction:column; align-items:flex-start; gap:2px; } }
 @media (max-width:760px) {
   .masthead { flex-wrap:wrap; gap:8px 12px; padding-top:12px; }
   .view-nav { order:3; flex-basis:100%; min-height:48px; }
   .view-nav a { flex:1; justify-content:center; }
-  .guided-demo { grid-template-columns:minmax(0,1fr); padding:18px; gap:16px; width:100%; }
-  .guided-controls { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); }
-  .guided-controls .speed-label { grid-column:1 / -1; justify-self:start; }
-  .guided-status { margin-top:12px; }
+  .guided-demo { grid-template-columns:minmax(0,1fr); padding:12px; gap:8px; width:100%; }
+  .guided-intro { flex-direction:row; align-items:center; gap:10px; }
+  .guided-controls { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)) auto; gap:6px; }
+  .guided-controls .button,.guided-controls select { min-height:44px; }
+  .guided-controls .speed-label { flex-direction:column; align-items:flex-start; gap:2px; font-size:10px; }
+  .guided-controls .speed-label select { width:60px; min-height:32px; }
+  #guided-progress { flex-basis:65px; width:65px; }
   body[data-view="demo"] .workspace { padding-top:20px; }
   body[data-view="demo"] .operation-desk { grid-template-columns:minmax(0,1fr); grid-template-areas:"deck" "feedback" "add" "collection"; }
   body[data-view="demo"] .deck { padding:20px; }
