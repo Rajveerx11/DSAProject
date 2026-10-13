@@ -26,6 +26,12 @@
 - Critical regression from independent review: active pointer card/fields must remain fully visible at 768x768 and 1024x600, not just 1440x1000. Compact guide and inspector or adapt layout so a full 140px card plus gutters fits; panning alone cannot fix insufficient space.
 - View/audio agents stay isolated; audio agent owns only app.js/check.cjs, view agent owns only index.html/styles.css. Manager updates browser tests/docs and integrates. Prior silent-only assertions/docs must be updated honestly.
 
+## Mobile and media lifecycle follow-up
+- During an active tour at <=760px, `body[data-tour-phase="controls"|"replay"]` shows one bounded pane at a time below a sticky guide. JS measures `--tour-guide-height`, brings the guide into view, pans the control pane, then exposes/reflows the replay before sending the genuine C action. Mobile reset highlights Start, which starts that reset. Pause/Stop remain reachable; end/stop/exit restores ordinary stacked layout. Desktop remains side-by-side.
+- Full 390x844 and 320x812 tours must exercise all real C actions/frames, full highlighted controls/active cards, visible Pause/Stop, pause/resume and Stop cleanup. Idle screenshots alone are insufficient.
+- Media reconciliation uses actual C IDs/membership/metadata, not historical operation.action: a GET with the last reset label is not a new reset. Actual C reset changes IDs and still releases obsolete blobs.
+- A persisted pagehide pauses and retains local associations for cached Back; pageshow refreshes C and never autoplays. A nonpersisted page exit disposes blobs. Test unchanged Refresh, persisted lifecycle retention/pruning and a real Back round trip when the browser uses BFCache.
+
 ## Isolation and ownership
 - View agent: only `web/index.html`, `web/styles.css`; Ponytail + Frontend Design, preserve incumbent paper/ink/vermilion visual language. No JS or C edits.
 - Controller agent: only `web/app.js`, `web/check.cjs`; Ponytail, route handling and sequential guided controller reuse existing functions. No HTML/CSS/C edits. Existing unit fixtures retained.
