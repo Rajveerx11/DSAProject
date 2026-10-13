@@ -151,9 +151,9 @@ function shouldAutoPlay(count, reducedMotion, enabled) { return enabled && !redu
 function routeView(hash, current = 'demo') {
   return hash === '#simulation' ? 'simulation' : hash === '#demo' || !hash ? 'demo' : current;
 }
-function addedTrackId(result) {
+function addedTrackId(result, playlistId = 'main') {
   const before = new Set(result.operation.trace.before.flatMap(list => list.nodes.map(node => node.id)));
-  const added = result.playlists.find(list => list.id === 'main').nodes.filter(node => !before.has(node.id));
+  const added = result.playlists.find(list => list.id === playlistId).nodes.filter(node => !before.has(node.id));
   if (added.length !== 1) throw new Error('C did not return exactly one newly added record. Guided demonstration halted.');
   return added[0].id;
 }
@@ -267,6 +267,147 @@ function createGuidedController({ canStart, request, prepare, replay, update }) 
   };
 }
 
+// Twelve seconds of invented sample tones, not licensed recordings. Browser-only PCM WAV.
+function makeDemoWav(id) {
+  const rate = 22050, seconds = 12, samples = rate * seconds;
+  const bytes = new ArrayBuffer(44 + samples * 2);
+  const view = new DataView(bytes);
+  const write = (offset, text) => [...text].forEach((letter, index) => view.setUint8(offset + index, letter.charCodeAt(0)));
+  write(0, 'RIFF'); view.setUint32(4, 36 + samples * 2, true); write(8, 'WAVE');
+  write(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true); view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true);
+  view.setUint16(32, 2, true); view.setUint16(34, 16, true); write(36, 'data');
+  view.setUint32(40, samples * 2, true);
+  const melody = [0, 4, 7, 12, 7, 4, 2, 7];
+  const root = 130.8128 * Math.pow(2, (id % 5) / 12);
+  for (let i = 0; i < samples; i++) {
+    const time = i / rate, beatTime = time % 0.5;
+    const frequency = root * Math.pow(2, melody[Math.floor(time * 2) % melody.length] / 12);
+    const envelope = Math.min(1, beatTime / 0.025) * Math.exp(-beatTime * 5) * Math.min(1, (seconds - time) / 0.2);
+    const tone = Math.sin(2 * Math.PI * frequency * beatTime) + 0.18 * Math.sin(4 * Math.PI * frequency * beatTime);
+    view.setInt16(44 + i * 2, Math.round(tone * envelope * 0.17 * 32767), true);
+  }
+  return bytes;
+}
+
+// Media associations only; C snapshots still own selection, membership and order.
+function createAudioPlayer(audio, canPlay, update, urls = URL) {
+  const local = new Map();
+  let current = null;
+  let source = null;
+  let demoUrl = null;
+  let wantPlayback = false;
+  let broken = false;
+  let notice = '';
+  let attempt = 0;
+  function emit() {
+    const playing = wantPlayback || (!audio.paused && !audio.ended);
+    const label = source?.filename ? `Local audio: ${source.filename} · this browser only` : 'Generated sample tone · not a recording';
+    const playback = playing ? (audio.paused ? 'Starting…' : 'Playing') : audio.ended ? 'Finished · press Play to replay' : 'Paused · press Play';
+    update({ playing, available: Boolean(current && source && !broken), message: current ? `${label}. ${notice || playback}.` : 'No selected record. Add a record to Side A or merge Side B.' });
+  }
+  function pause(reason = '') {
+    attempt++;
+    wantPlayback = false;
+    if (reason || !broken) notice = reason;
+    audio.pause();
+    emit();
+  }
+  function clearSource() {
+    pause();
+    audio.removeAttribute('src');
+    audio.load();
+    if (demoUrl) urls.revokeObjectURL(demoUrl);
+    demoUrl = null;
+    source = null;
+    current = null;
+    broken = false;
+  }
+  function dispose() {
+    clearSource(); // Detach before revoking a URL the native element may still be reading.
+    for (const media of local.values()) urls.revokeObjectURL(media.url);
+    local.clear();
+    emit();
+  }
+  function sync(result, attachment = null) {
+    if (result.operation.action === 'reset') clearSource();
+    const nodes = new Map(result.playlists.flatMap(list => list.nodes.map(node => [node.id, node])));
+    const obsolete = [...local].filter(([id, media]) => {
+      const node = nodes.get(id);
+      return result.operation.action === 'reset' || !node || node.title !== media.title || node.artist !== media.artist;
+    });
+    if (obsolete.some(([, media]) => media === source)) clearSource();
+    for (const [id, media] of obsolete) { urls.revokeObjectURL(media.url); local.delete(id); }
+    let attachmentError = '';
+    if (attachment) {
+      try {
+        const id = addedTrackId(result, attachment.fields.playlist);
+        const node = nodes.get(id);
+        if (node.title !== attachment.fields.title || node.artist !== attachment.fields.artist) throw new Error('Metadata mismatch');
+        const media = { url: urls.createObjectURL(attachment.file), filename: attachment.file.name || 'Selected file', title: node.title, artist: node.artist };
+        local.set(id, media);
+      } catch {
+        attachmentError = 'Local audio could not be attached uniquely to the C response; a generated sample tone will be used';
+      }
+    }
+    const main = result.playlists.find(list => list.id === 'main');
+    const node = nodes.get(main.current) ?? null;
+    const media = node && local.get(node.id);
+    const same = current && node && current.id === node.id && current.title === node.title && current.artist === node.artist && (!media || media === source);
+    if (!same) {
+      clearSource();
+      current = node;
+      if (node) {
+        try {
+          if (media) source = media;
+          else {
+            demoUrl = urls.createObjectURL(new Blob([makeDemoWav(node.id)], { type: 'audio/wav' }));
+            source = { url: demoUrl };
+          }
+          audio.src = source.url;
+          audio.load();
+        } catch { broken = true; attachmentError = 'Browser audio is unavailable'; }
+      }
+    }
+    if (attachmentError || !same || !broken) notice = attachmentError;
+    emit(); // Never call play here: every source/selection change requires an explicit Play.
+  }
+  async function toggle() {
+    if (!canPlay() || !current || !source || broken) return;
+    if (wantPlayback || !audio.paused) { pause(); return; }
+    const ticket = ++attempt;
+    try {
+      if (audio.ended) audio.currentTime = 0;
+      notice = '';
+      wantPlayback = true;
+      emit();
+      await audio.play();
+      if (ticket !== attempt) return;
+      if (!canPlay()) pause();
+      else emit();
+    } catch (error) {
+      if (ticket !== attempt) return; // A Pause, source change or lifecycle exit cancelled this attempt.
+      wantPlayback = false;
+      audio.pause();
+      notice = error.name === 'NotAllowedError' ? 'Playback was blocked; press Play again' : 'Playback failed; try a supported local audio file or another record';
+      emit();
+    }
+  }
+  audio.addEventListener('play', () => { if (!wantPlayback || !canPlay()) pause(); else emit(); });
+  audio.addEventListener('pause', () => { wantPlayback = false; emit(); });
+  audio.addEventListener('ended', () => { attempt++; wantPlayback = false; notice = ''; emit(); });
+  audio.addEventListener('error', () => {
+    if (!source || !audio.error) return;
+    attempt++;
+    wantPlayback = false;
+    broken = true;
+    audio.pause();
+    notice = source.filename ? 'Cannot decode this local audio file; choose another record or supported file' : 'Cannot decode the generated sample tone in this browser';
+    emit();
+  });
+  return { sync, toggle, pause, dispose };
+}
+
 function initializeApp() {
   const $ = id => document.getElementById(id);
   const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -357,6 +498,12 @@ function initializeApp() {
     }
   });
 
+  let audioStatus = { playing: false, available: false, message: 'Waiting for the C playlist.' };
+  let audioFileRevision = 0;
+  const player = $('audio') ? createAudioPlayer($('audio'),
+    () => view === 'demo' && !pending && connected && !hidden && !document.hidden && !guided.active(),
+    snapshot => { audioStatus = snapshot; updateControls(); }) : null;
+
   function element(tag, className, text) {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -417,6 +564,13 @@ function initializeApp() {
     $('reset').disabled = locked;
     $('refresh').disabled = pending || guided.active();
     for (const id of ['previous', 'next']) $(id).disabled = locked || !currentTrack();
+    if ($('play-pause')) {
+      $('play-pause').disabled = locked || view !== 'demo' || hidden || document.hidden || !audioStatus.available;
+      $('play-pause').textContent = audioStatus.playing ? 'Pause' : 'Play';
+      $('play-pause').setAttribute('aria-label', `${audioStatus.playing ? 'Pause' : 'Play'} selected Side A record`);
+      $('audio-status').textContent = audioStatus.message;
+      $('volume').disabled = view !== 'demo' || !audioStatus.available;
+    }
     $('merge').disabled = locked || !playlist('secondary')?.size;
     document.querySelectorAll('.reverse-button').forEach(button => { button.disabled = locked || !playlist(button.dataset.playlist)?.size; });
     document.querySelectorAll('.track-select, .delete-track').forEach(button => { button.disabled = locked; });
@@ -743,7 +897,7 @@ function initializeApp() {
     schedule();
   }
 
-  async function requestState(fields = null, guidedRequest = false) {
+  async function requestState(fields = null, guidedRequest = false, file = null) {
     if (pending || hidden || document.hidden || (guided.active() && !guidedRequest)) return false;
     finish(); // No queued operations: complete old historical playback before asking C again.
     const focusTarget = document.activeElement;
@@ -780,6 +934,7 @@ function initializeApp() {
       if (hidden) return false;
       state = result;
       connected = true;
+      player?.sync(result, file && fields?.action === 'add' ? { file, fields } : null);
       renderTracks();
       if (guidedRequest) {
         pause();
@@ -790,7 +945,7 @@ function initializeApp() {
       feedback(operationMessage());
       return true;
     } catch (error) {
-      if (!error.statePreserved) connected = false;
+      if (!error.statePreserved) { connected = false; player?.pause('C unavailable; refresh state before playing'); }
       if (!hidden) {
         const detail = error.name === 'AbortError' ? 'C did not respond within 10 seconds. The operation may have completed; refresh state before retrying.' : error.message || 'Cannot reach the local C server. Refresh state to reconnect.';
         feedback(`${detail}${state && !error.statePreserved ? ' Displaying the last received snapshot, not live state.' : ''}`, true);
@@ -830,15 +985,28 @@ function initializeApp() {
     const artistValid = validateField('artist');
     if (!titleValid || !artistValid) { $('add-form').reportValidity(); return; }
     const raw = { title: $('title').value, artist: $('artist').value };
-    const success = await requestState({ action: 'add', playlist: $('destination').value, title: trimSongText(raw.title), artist: trimSongText(raw.artist) });
+    const file = $('audio-file')?.files[0] ?? null;
+    const fileRevision = audioFileRevision;
+    const success = await requestState({ action: 'add', playlist: $('destination').value, title: trimSongText(raw.title), artist: trimSongText(raw.artist) }, false, file);
     if (success) {
-      // Preserve edits made during the request; never force focus back into the form.
+      // Preserve file reselections (even the same file) and edits made during the request.
+      if ($('audio-file') && audioFileRevision === fileRevision && ($('audio-file').files[0] ?? null) === file) $('audio-file').value = '';
+      // Never force focus back into the form.
       for (const id of ['title', 'artist']) {
         if ($(id).value === raw[id]) { $(id).value = ''; $(id).setCustomValidity(''); $(`${id}-bytes`).textContent = '0 / 127 bytes'; $(`${id}-bytes`).classList.remove('over-limit'); }
       }
     }
   });
   for (const id of ['title', 'artist']) $(id).addEventListener('input', () => validateField(id));
+  $('audio-file')?.addEventListener('change', () => { audioFileRevision++; });
+  $('play-pause')?.addEventListener('click', () => { void player?.toggle(); });
+  if ($('audio') && $('volume')) {
+    $('audio').volume = Number($('volume').value);
+    $('volume').addEventListener('input', () => {
+      const value = Number($('volume').value);
+      if (Number.isFinite(value)) $('audio').volume = Math.max(0, Math.min(1, value));
+    });
+  }
   for (const id of LIST_IDS) {
     $(`${id}-tracks`).addEventListener('click', event => {
       const button = event.target.closest('button[data-action]');
@@ -869,6 +1037,7 @@ function initializeApp() {
   $('replay-speed').addEventListener('change', manualReplay(() => { cancelAnimations(); drawEdges(); if (running) schedule(); }));
   $('guided-start')?.addEventListener('click', () => {
     if (guided.active()) return;
+    player?.pause();
     finish(); // Settle any manual replay before the first guided presentation/wait.
     guided.setSpeed($('guided-speed').value);
     void guided.start();
@@ -883,6 +1052,7 @@ function initializeApp() {
     const nextView = routeView(window.location.hash, view);
     if (view !== nextView) { guided.stop('Stopped on view exit. Accepted C actions remain committed; pending requests may still complete.'); finish(); }
     view = nextView;
+    if (view === 'simulation') player?.pause();
     document.body.dataset.view = view;
     $('pointer-lab').hidden = view !== 'simulation';
     if ($('guided-demo')) $('guided-demo').hidden = view !== 'simulation';
@@ -899,7 +1069,7 @@ function initializeApp() {
   }
   window.addEventListener('hashchange', navigate);
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { guided.stop('Stopped while the page was hidden. Accepted C actions remain committed; pending requests may still complete.'); finish(); }
+    if (document.hidden) { player?.pause(); guided.stop('Stopped while the page was hidden. Accepted C actions remain committed; pending requests may still complete.'); finish(); }
     updateControls();
   });
   navigate();
@@ -908,6 +1078,7 @@ function initializeApp() {
   window.addEventListener('pagehide', () => {
     guided.stop('Stopped on page exit. An in-flight C action may have committed; refresh state on return.');
     hidden = true;
+    player?.dispose();
     pause();
     cancelAnimations();
     clearTimeout(requestTimer);
@@ -923,4 +1094,4 @@ function initializeApp() {
 }
 
 if (typeof document !== 'undefined') initializeApp();
-if (typeof module !== 'undefined') module.exports = { trimSongText, textProblem, pointer, validateState, createProjection, applyEvent, projectTrace, eventLabel, shouldAutoPlay, routeView, addedTrackId, createGuidedController, TRACE_LIMIT, AUTO_LIMIT };
+if (typeof module !== 'undefined') module.exports = { trimSongText, textProblem, pointer, validateState, createProjection, applyEvent, projectTrace, eventLabel, shouldAutoPlay, routeView, addedTrackId, createGuidedController, makeDemoWav, createAudioPlayer, TRACE_LIMIT, AUTO_LIMIT };
