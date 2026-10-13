@@ -14,10 +14,17 @@ const { projectTrace } = require(path.join(root, 'web/app.js'));
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const page = await context.newPage();
   const errors = [];
+  let expectedRejection = false;
   page.on('pageerror', error => errors.push(error.message));
-  page.on('console', message => { if (message.type() === 'error') errors.push(`${message.text()} (${message.location().url})`); });
+  page.on('console', message => {
+    if (message.type() === 'error' && !(expectedRejection && message.location().url === `${url}/api/action` && message.text().includes('400'))) errors.push(`${message.text()} (${message.location().url})`);
+  });
   let checks = 0;
   const ready = () => page.waitForFunction(() => document.getElementById('connection').textContent === 'C state connected');
+  async function switchView(view) {
+    await page.locator(`#view-${view}`).click();
+    await page.waitForFunction(expected=>document.body.dataset.view===expected,view);
+  }
   const final = () => page.waitForFunction(() => document.getElementById('replay-status').textContent.startsWith('Committed C state'));
   const state = async () => { const response = await fetch(`${url}/api/state`); assert.equal(response.status, 200); return response.json(); };
   const external = async fields => { const response = await fetch(`${url}/api/action`, { method: 'POST', headers: {'Content-Type':'application/x-www-form-urlencoded'}, body: new URLSearchParams(fields).toString() }); assert.equal(response.status, 200); return response.json(); };
@@ -80,6 +87,26 @@ const { projectTrace } = require(path.join(root, 'web/app.js'));
   }
   try {
     await page.goto(url); await ready();
+    assert.equal(await page.locator('body').getAttribute('data-view'), 'demo');
+    assert.equal(await page.locator('#pointer-lab').isVisible(), false);
+    assert.equal(await page.locator('#guided-demo').isVisible(), false);
+    assert.equal(await page.locator('.node-card').count(), 0, 'Demo does not build a hidden visualization');
+    const demoBefore = await state();
+    await operation(page.locator('#next'), 'next', true);
+    assert.equal(await page.locator('.node-card').count(), 0, 'Manual Demo operations stay visualization-free');
+    assert.equal(await page.locator('#current-title').textContent(), demoBefore.playlists[0].nodes[1].title);
+    await page.screenshot({path:path.join(output,'demo-desktop.png'),fullPage:true});
+    const demoAfter = await state();
+    await switchView('simulation');
+    assert.equal(await page.locator('body').getAttribute('data-view'), 'simulation');
+    assert.deepEqual((await state()).playlists, demoAfter.playlists, 'Navigation never resets C state');
+    assert.equal(await page.locator('#guided-demo').getAttribute('data-status'), 'idle');
+    await page.evaluate(()=>{location.hash='#main';});
+    await page.waitForFunction(()=>location.hash==='#main');
+    assert.equal(await page.locator('body').getAttribute('data-view'), 'simulation', 'Skip anchor preserves simulation');
+    await page.evaluate(()=>history.back());
+    await page.waitForFunction(()=>location.hash==='#simulation');
+    await page.reload(); await ready();
     assert.equal(await page.locator('#pointer-lab').isVisible(), true);
     assert.equal(await page.locator('audio, input[type="file"]').count(), 0, 'Silent simulation, no music files required');
     const desk = await page.locator('.operation-desk').boundingBox();
@@ -204,8 +231,151 @@ const { projectTrace } = require(path.join(root, 'web/app.js'));
     await page.locator('#replay-finish').click();
     await page.reload(); await ready(); await page.keyboard.press('Tab');
     assert.equal(await page.evaluate(()=>document.activeElement.textContent),'Skip to the operation desk');
+    // The entire automatic presentation must use eight actual C requests, not fake state.
+    await page.emulateMedia({reducedMotion:'no-preference'});
+    await operation(page.locator('#reset'), 'reset'); await final();
+    await page.locator('#guided-speed').selectOption('4');
+    let captured = null;
+    const recordRequest = request => {
+      if (captured && request.url() === `${url}/api/action` && request.method()==='POST') captured.fields.push(Object.fromEntries(new URLSearchParams(request.postData())));
+    };
+    const recordResponse = response => {
+      if (captured && response.url() === `${url}/api/action`) captured.responses.push(response.json());
+    };
+    page.on('request', recordRequest); page.on('response', recordResponse);
+    await page.evaluate(()=>{
+      window.guideFrames = {};
+      window.guideHighlights = [];
+      window.guideGraphVisibility = [];
+      new MutationObserver(records=>{
+        for (const record of records) {
+          const target=record.target;
+          if (!target.isConnected || !target.classList.contains('guided-target')) continue;
+          const box=target.getBoundingClientRect();
+          const pane=target.closest('.operation-desk');
+          const bounds=pane?.getBoundingClientRect();
+          const list=target.closest('.track-list')?.getBoundingClientRect();
+          const top=Math.max(0,bounds?.top||0,list?.top||0);
+          const bottom=Math.min(innerHeight,bounds?.bottom||innerHeight,list?.bottom||innerHeight);
+          window.guideHighlights.push({action:target.dataset.action||target.id,visible:box.top>=top&&box.bottom<=bottom,top:box.top,bottom:box.bottom,clipTop:top,clipBottom:bottom});
+        }
+      }).observe(document.body,{subtree:true,attributes:true,attributeFilter:['class']});
+      new MutationObserver(()=>{
+        const step=document.getElementById('guided-progress').value;
+        (window.guideFrames[step] ||= []).push(document.getElementById('replay-meter').value);
+        const label=document.getElementById('active-assignment').textContent;
+        const card=label.startsWith('Side ') ? document.querySelector('.node-card.is-target')||document.querySelector('.node-card.is-source') : document.querySelector('.node-card.is-visited,.node-card.is-allocated,.node-card.is-source,.node-card.is-freed');
+        if (card) {
+          const box=card.getBoundingClientRect();
+          const lab=document.getElementById('pointer-lab').getBoundingClientRect();
+          const top=lab.top+document.querySelector('.replay-inspector').getBoundingClientRect().height;
+          window.guideGraphVisibility.push({label,visible:box.top>=top&&box.bottom<=Math.min(innerHeight,lab.bottom),top:box.top,bottom:box.bottom,clipTop:top,clipBottom:lab.bottom});
+        }
+      }).observe(document.getElementById('replay-meter'), {attributes:true,attributeFilter:['value']});
+    });
+    captured = {fields:[],responses:[]};
+    await page.locator('#guided-start').click();
+    await page.locator('#guided-start').dispatchEvent('click'); // Programmatic double Start is guarded too.
+    await page.waitForFunction(()=>document.getElementById('guided-progress').value===1);
+    await page.locator('#guided-pause').click();
+    const countWhilePaused=captured.fields.length;
+    const pausedFrame=await page.locator('#replay-meter').evaluate(meter=>meter.value);
+    assert.equal(await page.locator('#guided-demo').getAttribute('data-status'), 'paused');
+    assert.equal(await page.locator('#next').isDisabled(), true);
+    assert.equal(await page.locator('#replay-next').isDisabled(), true);
+    await page.waitForTimeout(350); // Prove paused work does not dispatch or advance.
+    assert.equal(captured.fields.length,countWhilePaused);
+    assert.equal(await page.locator('#replay-meter').evaluate(meter=>meter.value),pausedFrame);
+    await page.locator('#guided-speed').selectOption('2');
+    assert.equal(await page.locator('#guided-demo').getAttribute('data-status'), 'paused');
+    await page.screenshot({path:path.join(output,'guided-paused.png'),fullPage:true});
+    await page.locator('#guided-speed').selectOption('4');
+    await page.locator('#guided-pause').click();
+    await page.waitForFunction(()=>document.getElementById('guided-demo').dataset.status==='complete');
+    assert.deepEqual(captured.fields.map(fields=>fields.action), ['reset','add','next','previous','select','delete','reverse','merge']);
+    const tourStates=await Promise.all(captured.responses);
+    const addedId=tourStates[1].playlists[0].nodes.at(-1).id;
+    assert.equal(captured.fields[4].id,String(addedId)); assert.equal(captured.fields[5].id,String(addedId));
+    const highlights=await page.evaluate(()=>window.guideHighlights);
+    assert.deepEqual(highlights.filter(target=>!target.visible),[],`Every automatic control highlight remains visible beside the canvas: ${JSON.stringify(highlights.filter(target=>!target.visible))}`);
+    for (const action of ['reset','add-submit','next','previous','select','delete','reverse-main','merge']) assert(highlights.some(target=>target.action===action),`Visible guided control ${action}`);
+    const graphVisibility=await page.evaluate(()=>window.guideGraphVisibility);
+    assert.deepEqual(graphVisibility.filter(card=>!card.visible),[],`Active C record visible below the inspector: ${JSON.stringify(graphVisibility.filter(card=>!card.visible))}`);
+    assert(graphVisibility.some(card=>card.label.startsWith('Side B.')),'Side B cleanup assignments remain visible automatically');
+    const frames=await page.evaluate(()=>window.guideFrames);
+    for (const [index,snapshot] of tourStates.entries()) {
+      require(path.join(root,'web/app.js')).validateState(snapshot);
+      for (let f=snapshot.operation.trace.events.length?0:1;f<=snapshot.operation.trace.events.length+1;f++) assert(frames[index].includes(f),`Guided action ${index}: C frame ${f} presented before advancing`);
+    }
+    assert.equal(await page.locator('#guided-progress').evaluate(meter=>meter.value),8);
+    assert.equal(tourStates[7].playlists[0].size,5); assert.equal(tourStates[7].playlists[1].size,0);
+    await frameCheck(tourStates[7],tourStates[7].operation.trace.events.length+1); await settledEdges();
+    assert.equal(await page.locator('#guided-cursor').isVisible(),false);
+    assert.equal(await page.locator('.guided-target').count(),0);
+    assert.equal(await page.locator('#next').isDisabled(),false);
+    await page.screenshot({path:path.join(output,'guided-complete.png'),fullPage:true});
+
+    // Stop/view-exit cannot undo a C POST that was already accepted, but must stop future work.
+    let acceptedResolve; let releaseResolve;
+    const accepted=new Promise(resolve=>{acceptedResolve=resolve;});
+    const release=new Promise(resolve=>{releaseResolve=resolve;});
+    await page.route('**/api/action',async route=>{const response=await route.fetch(); acceptedResolve(); await release; await route.fulfill({response});});
+    captured={fields:[],responses:[]};
+    await page.locator('#guided-start').click(); await accepted;
+    await page.locator('#guided-stop').click();
+    assert.equal(await page.locator('#guided-demo').getAttribute('data-status'),'stopped');
+    assert.equal(await page.locator('#guided-start').isDisabled(),true,'Cannot start a replacement tour while old POST is pending');
+    await switchView('demo');
+    releaseResolve(); await ready(); await page.unroute('**/api/action');
+    await page.waitForTimeout(350);
+    assert.equal(captured.fields.length,1); assert.equal((await state()).operation.action,'reset');
+    assert.equal(await page.locator('#pointer-lab').isVisible(),false);
+    await switchView('simulation');
+    captured={fields:[],responses:[]};
+    await page.locator('#guided-start').click();
+    await page.waitForFunction(()=>document.getElementById('guided-progress').value===1);
+    await switchView('demo');
+    const exitedCount=captured.fields.length; await page.waitForTimeout(350);
+    assert.equal(captured.fields.length,exitedCount);
+    assert.equal(await page.locator('#guided-demo').getAttribute('data-status'),'stopped');
+
+    // Reduced motion retains the real sequence and readable explanations, without moving cursors.
+    await switchView('simulation'); await page.emulateMedia({reducedMotion:'reduce'});
+    captured={fields:[],responses:[]};
+    await page.locator('#guided-start').click();
+    await page.waitForFunction(()=>document.getElementById('guided-demo').dataset.status==='complete');
+    assert.deepEqual(captured.fields.map(fields=>fields.action),['reset','add','next','previous','select','delete','reverse','merge']);
+    assert.equal(await page.locator('#guided-cursor').isVisible(),false);
+    assert.equal(await page.evaluate(()=>document.getAnimations().length),0);
+
+    // A failed real request stops the tour and requires explicit restart, never automatic retry.
+    expectedRejection=true;
+    const rejectionBefore=await state();
+    await page.route('**/api/action',async route=>{await route.fulfill({status:400,contentType:'application/json',body:JSON.stringify({ok:false,error:'Test rejection: no mutation'})});});
+    captured={fields:[],responses:[]};
+    await page.locator('#guided-start').click();
+    await page.waitForFunction(()=>document.getElementById('guided-demo').dataset.status==='error');
+    assert.equal(captured.fields.length,1); assert.equal(await page.locator('#guided-progress').evaluate(meter=>meter.value),0);
+    assert.match(await page.locator('#guided-status').textContent(),/Test rejection/);
+    await page.unroute('**/api/action'); captured=null;
+    assert.deepEqual((await state()).playlists,rejectionBefore.playlists,'Rejected request never changed C state');
+    expectedRejection=false;
+    page.off('request',recordRequest); page.off('response',recordResponse);
+    await page.emulateMedia({reducedMotion:'no-preference'});
+    await operation(page.locator('#reset'),'reset'); await final();
+    for (const [width,height,name] of [[1440,1000,'desktop'],[768,1024,'tablet'],[390,844,'mobile'],[320,812,'small-mobile']]) {
+      await page.setViewportSize({width,height});
+      for (const view of ['demo','simulation']) {
+        await page.goto(`${url}/#${view}`); await ready();
+        await page.waitForFunction(expected=>document.body.dataset.view===expected,view);
+        await page.evaluate(()=>window.scrollTo(0,0));
+        assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,`${view}/${name}: no overflow`);
+        await page.screenshot({path:path.join(output,`${view}-${name}.png`),fullPage:true});
+      }
+    }
     assert.deepEqual(errors,[],`No console/page errors: ${JSON.stringify(errors)}`);
     console.log(`PASS: ${checks} C-backed replay/layout checks; real intermediate assignments, visits, allocation/free ghosts, navigation/reverse/merge; side-by-side geometry; settled SVG edges; playback/pause/step/replay/finish/speed/interruption; stale before snapshot; Unicode, focus, empty states, responsive and reduced motion. URL ${url}`);
+    console.log('PASS: default demo/explicit simulation routing, history/deep-link/reload and preserved C state; guided 8-POST sequence and every recorded frame, derived IDs, visible automatic controls, duplicate Start, pause/resume/speed, in-flight Stop, view exit, reduced motion, rejection/no retry, both-view responsive screenshots.');
     console.log(`Screenshots: ${output}`);
   } catch (error) {
     await page.screenshot({path:path.join(output,'failure.png'),fullPage:true});
