@@ -413,6 +413,7 @@ function createAudioPlayer(audio, canPlay, update, urls = URL) {
 function initializeApp() {
   const $ = id => document.getElementById(id);
   const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  const mobile = window.matchMedia('(max-width: 760px)');
   let state = null;
   let pending = false;
   let connected = false;
@@ -440,22 +441,39 @@ function initializeApp() {
     guidedTarget = null;
     if ($('guided-cursor')) $('guided-cursor').hidden = true;
   }
+  function sizeTourViewport() {
+    if (document.body.dataset.tourPhase && mobile.matches) {
+      document.body.style.setProperty('--tour-guide-height', `${$('guided-demo').getBoundingClientRect().height}px`);
+    } else document.body.style.removeProperty('--tour-guide-height');
+  }
+  function presentTourPhase(phase) {
+    document.body.dataset.tourPhase = phase;
+    sizeTourViewport();
+    if (mobile.matches) {
+      $('guided-demo').scrollIntoView({ block: 'start', behavior: 'instant' });
+      if (phase === 'replay') $('guided-cursor').hidden = true;
+    }
+    // The mobile canvas was hidden during the button presentation; rebuild its geometry.
+    if (phase === 'replay' && state) renderReplay();
+  }
   const guided = createGuidedController({
     canStart: () => Boolean($('guided-demo') && view === 'simulation' && !pending && connected && state && !hidden && !document.hidden),
     request: async fields => {
+      presentTourPhase('replay');
       const accepted = await requestState(fields, true);
       if (!accepted) throw new Error($('feedback').textContent);
       return state;
     },
     prepare: async (fields, { wait }) => {
       clearGuidedTarget();
+      presentTourPhase('controls');
       if (fields.action === 'add') {
         for (const id of ['title', 'artist']) { $(id).value = fields[id]; validateField(id); }
         $('destination').value = fields.playlist;
       }
       guidedTarget = fields.id
         ? [...document.querySelectorAll('button[data-action]')].find(button => button.dataset.action === fields.action && button.dataset.id === fields.id && button.dataset.playlist === fields.playlist)
-        : $(fields.action === 'add' ? 'add-submit' : fields.action === 'reverse' ? 'reverse-main' : fields.action);
+        : $(mobile.matches && fields.action === 'reset' ? 'guided-start' : fields.action === 'add' ? 'add-submit' : fields.action === 'reverse' ? 'reverse-main' : fields.action);
       guidedTarget?.classList.add('guided-target');
       // Pan only the bounded operation pane: keep Start/Pause and the canvas visible.
       const desk = document.querySelector('.operation-desk');
@@ -495,7 +513,11 @@ function initializeApp() {
     },
     update: snapshot => {
       guidedStatus = snapshot;
-      if (!snapshot.active) { clearGuidedTarget(); cancelAnimations(); drawEdges(); }
+      if (!snapshot.active) {
+        delete document.body.dataset.tourPhase;
+        document.body.style.removeProperty('--tour-guide-height');
+        clearGuidedTarget(); cancelAnimations(); drawEdges();
+      }
       updateControls();
     }
   });
@@ -591,6 +613,7 @@ function initializeApp() {
       $('guided-pause').disabled = !guided.active();
       $('guided-pause').textContent = guided.paused() ? 'Resume' : 'Pause';
       $('guided-stop').disabled = !guided.active();
+      sizeTourViewport();
     }
     const unavailable = !state || pending || guided.active();
     $('replay-auto').disabled = guided.active();
@@ -1071,6 +1094,10 @@ function initializeApp() {
     updateControls();
   }
   window.addEventListener('hashchange', navigate);
+  window.addEventListener('resize', () => {
+    if (!guided.active()) return;
+    presentTourPhase(document.body.dataset.tourPhase || 'controls');
+  });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { player?.pause(); guided.stop('Stopped while the page was hidden. Accepted C actions remain committed; pending requests may still complete.'); finish(); }
     updateControls();
