@@ -2,7 +2,7 @@
 // Run: node web/check.cjs. All snapshots/events below are UNIT fixtures, never runtime C substitutes.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const { trimSongText, textProblem, pointer, validateState, projectTrace, eventLabel, shouldAutoPlay, TRACE_LIMIT } = require('./app.js');
+const { trimSongText, textProblem, pointer, validateState, projectTrace, eventLabel, shouldAutoPlay, routeView, addedTrackId, createGuidedController, makeDemoWav, createAudioPlayer, TRACE_LIMIT } = require('./app.js');
 
 assert.equal(textProblem('  A record  '), '');
 assert.equal(textProblem('a'.repeat(127)), '');
@@ -178,6 +178,8 @@ assert.equal(shouldAutoPlay(1, false, false), false);
 assert.equal(shouldAutoPlay(0, false, true), false);
 assert.equal(eventLabel(write(6, 'prev', null, 3)), '#6.prev: NULL → #3');
 
+// --unit checks exported logic in isolation. Default checks require the complete partner DOM.
+function checkDom() {
 const html = fs.readFileSync(`${__dirname}/index.html`, 'utf8');
 const js = fs.readFileSync(`${__dirname}/app.js`, 'utf8');
 const css = fs.readFileSync(`${__dirname}/styles.css`, 'utf8');
@@ -186,8 +188,7 @@ assert(!/<script(?![^>]*\bsrc=)/i.test(html), 'No inline scripts');
 assert(!/\sstyle=/i.test(html), 'No inline styles');
 assert(!/innerHTML|insertAdjacentHTML/.test(js), 'User strings use textContent');
 assert(!/https?:\/\/|data:/i.test(html), 'No remote or data assets');
-assert(!/<audio|type="file"|id="volume"|id="seek"|lab-toggle/.test(html), 'No audio/file controls or mandatory lab toggle');
-assert(!/makeDemoWav|localSource|localAudio|createObjectURL/.test(js), 'Audio implementation removed');
+assert(!/id="seek"|lab-toggle/.test(html), 'No resurrected seek controls or mandatory lab toggle');
 assert(js.includes("'Content-Type': 'application/x-www-form-urlencoded'"));
 assert(js.includes('new URLSearchParams(fields)'));
 assert(js.includes('getTotalLength()') && js.includes('strokeDashoffset'), 'Pointer assignments visibly redraw arrows');
@@ -196,5 +197,346 @@ assert(css.includes('grid-template-columns:330px minmax(0,1fr)') && css.includes
 const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
 assert.equal(new Set(ids).size, ids.length, 'DOM IDs unique');
 for (const id of ['next', 'previous', 'reset', 'refresh', 'add-submit', 'title', 'artist', 'destination', 'main-tracks', 'secondary-tracks', 'diagrams', 'operation-message', 'replay-auto', 'replay-pause', 'replay-previous', 'replay-next', 'replay-replay', 'replay-finish', 'replay-speed']) assert(ids.includes(id), `Accessible control ${id} exists`);
-assert(!/<section id="pointer-lab"[^>]*\bhidden/.test(html), 'Lab visible by default');
-console.log('PASS: exact UTF-8 policy, snapshot/trace bounds, chronological allocation/visit/write/free projection, cyclic intermediate reverse, cross-list merge, before/after parity, truncation, large/reduced-motion autoplay policy, safe rendering, silent controls and form encoding. Unit fixtures only; real C/browser integration belongs to manager.');
+const guidedIds = ['view-demo', 'view-simulation', 'guided-demo', 'guided-start', 'guided-pause', 'guided-stop', 'guided-speed', 'guided-status', 'guided-progress', 'guided-reset-note', 'guided-cursor'];
+const missing = guidedIds.filter(id => !ids.includes(id));
+assert.deepEqual(missing, [], 'Integrated frontend must provide the full guided DOM contract');
+assert(/<body[^>]*data-view="demo"/.test(html), 'Default HTML view is demo');
+for (const id of ['pointer-lab', 'guided-demo', 'guided-cursor']) {
+  const tag = html.match(new RegExp(`<[^>]*\\bid="${id}"[^>]*>`))?.[0];
+  assert(tag && /\bhidden\b/.test(tag), `${id} starts hidden`);
+}
+
+const tag = id => html.match(new RegExp(`<[^>]*\\bid="${id}"[^>]*>`))?.[0];
+const audioIds = ['audio', 'play-pause', 'audio-status', 'audio-file', 'volume', 'manual-replay-details'];
+assert.deepEqual(audioIds.filter(id => !ids.includes(id)), [], 'Integrated frontend must provide the full audio/disclosure DOM contract; counterpart HTML is absent in the isolated audio worktree');
+assert(/^<audio\b/.test(tag('audio')) && /\bhidden\b/.test(tag('audio')) && /\bpreload="metadata"/.test(tag('audio')), 'Hidden native audio preloads metadata');
+assert(!/\bautoplay\b/.test(tag('audio')), 'Playback requires an explicit Play gesture');
+assert(/^<button\b/.test(tag('play-pause')), 'Prominent Play/Pause is a native button');
+assert(/\baria-live="polite"/.test(tag('audio-status')), 'Playback status is announced politely');
+assert(/\btype="file"/.test(tag('audio-file')) && /\baccept="audio\/\*"/.test(tag('audio-file')), 'Local audio input has the documented accept hint');
+assert(/\btype="range"/.test(tag('volume')), 'Volume is a native range');
+for (const [name, value] of [['min', 0], ['max', 1], ['step', 0.05], ['value', 0.7]]) {
+  const attribute = tag('volume').match(new RegExp(`\\b${name}="([^"]+)"`))?.[1];
+  assert.equal(Number(attribute), value, `Volume ${name}=${value}`);
+}
+assert(/^<details\b/.test(tag('manual-replay-details')) && !/\bopen\b/.test(tag('manual-replay-details')), 'Manual replay disclosure starts closed');
+}
+
+assert.equal(routeView('', 'simulation'), 'demo');
+assert.equal(routeView('#simulation'), 'simulation');
+assert.equal(routeView('#demo', 'simulation'), 'demo');
+assert.equal(routeView('#main', 'simulation'), 'simulation', 'Skip link preserves established simulation');
+assert.equal(routeView('#unknown', 'demo'), 'demo');
+assert.equal(routeView('#unknown', 'simulation'), 'simulation');
+assert.equal(addedTrackId(add), 6);
+const freshId = fixture('add', base, [list('main', [1, 2, 3, 9001]), base[1]]);
+assert.equal(addedTrackId(freshId), 9001, 'Added ID comes from C snapshots, not a constant or changed advisory');
+assert.throws(() => addedTrackId(snapshot), /exactly one/);
+assert.throws(() => addedTrackId(fixture('add', base, [list('main', [1, 2, 3, 6, 7]), base[1]])), /exactly one/);
+
+// Exercise the real controller with explicit UNIT responses and controllable acceptance/replay gates.
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+}
+async function until(test) {
+  for (let i = 0; i < 200; i++) { if (test()) return; await delay(2); }
+  assert.fail('Controller did not reach the expected checkpoint');
+}
+function harness(overrides = {}) {
+  const updates = [];
+  const calls = [];
+  const h = { updates, calls, latest: () => updates.at(-1) };
+  h.controller = createGuidedController({
+    canStart: () => true,
+    prepare: async () => {},
+    request: async fields => { calls.push(fields); return fields.action === 'add' ? add : snapshot; },
+    replay: async () => {},
+    update: value => updates.push(value),
+    ...overrides
+  });
+  return h;
+}
+async function controllerChecks() {
+  const replayGates = [];
+  const h = harness({ replay: async () => { const gate = deferred(); replayGates.push(gate); await gate.promise; } });
+  const done = h.controller.start();
+  assert.equal(await h.controller.start(), false, 'Double Start is rejected');
+  for (let i = 0; i < 8; i++) {
+    await until(() => replayGates.length === i + 1);
+    assert.equal(h.calls.length, i + 1);
+    assert.equal(h.latest().completed, i, 'Progress requires accepted response AND completed replay');
+    await delay(5);
+    assert.equal(h.calls.length, i + 1, 'No next POST while replay remains incomplete');
+    replayGates[i].resolve();
+  }
+  assert.equal(await done, true);
+  assert.deepEqual(h.calls, [
+    { action: 'reset' }, { action: 'add', playlist: 'main', title: 'Guided Groove', artist: 'Sample session' },
+    { action: 'next', playlist: 'main' }, { action: 'previous', playlist: 'main' },
+    { action: 'select', playlist: 'main', id: '6' }, { action: 'delete', playlist: 'main', id: '6' },
+    { action: 'reverse', playlist: 'main' }, { action: 'merge', playlist: 'main', source: 'secondary' }
+  ]);
+  assert.equal(h.latest().status, 'complete');
+  assert.equal(h.latest().completed, 8);
+
+  const denied = harness({ canStart: () => false });
+  assert.equal(await denied.controller.start(), false);
+  assert.equal(denied.calls.length, 0, 'Pending/disconnected/hidden start policy cannot dispatch');
+
+  const responseGate = deferred();
+  let requests = 0;
+  let replays = 0;
+  const paused = harness({
+    request: async fields => { requests++; return fields.action === 'add' ? add : responseGate.promise; },
+    replay: async (result, { wait }) => { replays++; await wait(20); }
+  });
+  const pausedDone = paused.controller.start();
+  await until(() => requests === 1);
+  paused.controller.pause();
+  responseGate.resolve(snapshot);
+  await delay(25);
+  assert.equal(replays, 0, 'Paused in-flight acceptance must hold replay');
+  assert.equal(requests, 1);
+  paused.controller.pause();
+  await until(() => replays === 1);
+  paused.controller.pause();
+  await delay(35);
+  assert.equal(requests, 1, 'Pause holds current replay wait as well as future requests');
+  paused.controller.setSpeed(4);
+  assert.equal(paused.latest().status, 'paused', 'Speed does not resume paused work');
+  paused.controller.pause();
+  await until(() => requests === 2);
+  paused.controller.stop();
+  assert.equal(await pausedDone, false);
+  assert.equal(paused.latest().status, 'stopped');
+
+  const inFlight = deferred();
+  let accepted = 0;
+  let replayed = 0;
+  const stopped = harness({
+    request: async fields => { stopped.calls.push(fields); const value = await inFlight.promise; accepted++; return value; },
+    replay: async () => { replayed++; }
+  });
+  const stoppedDone = stopped.controller.start();
+  await until(() => stopped.calls.length === 1);
+  stopped.controller.stop();
+  inFlight.resolve(snapshot);
+  assert.equal(await stoppedDone, false);
+  assert.equal(accepted, 1, 'Stop never claims to undo an already sent C request');
+  assert.equal(replayed, 0);
+  assert.equal(stopped.calls.length, 1);
+  assert.equal(stopped.latest().status, 'stopped');
+  assert.match(stopped.latest().message, /in-flight/);
+
+  for (const request of [async () => false, async () => { throw new Error('Disconnected'); }]) {
+    const failed = harness({ request: async fields => { failed.calls.push(fields); return request(); } });
+    assert.equal(await failed.controller.start(), false);
+    assert.equal(failed.latest().status, 'error');
+    assert.equal(failed.latest().completed, 0);
+    assert.equal(failed.calls.length, 1, 'Failure halts without retry or duplicate mutation');
+  }
+  const badAdd = harness({ request: async fields => { badAdd.calls.push(fields); return snapshot; } });
+  assert.equal(await badAdd.controller.start(), false);
+  assert.equal(badAdd.latest().status, 'error');
+  assert.equal(badAdd.calls.length, 2, 'Ambiguous added ID halts before select/delete');
+
+  let prepared = false;
+  const held = harness({ prepare: async (fields, { wait }) => { prepared = true; await wait(40); } });
+  const heldDone = held.controller.start();
+  await until(() => prepared);
+  held.controller.pause();
+  await delay(50);
+  assert.equal(held.calls.length, 0, 'Pause during field presentation cannot POST');
+  held.controller.stop('Stopped on view exit.');
+  assert.equal(await heldDone, false);
+  assert.equal(held.calls.length, 0, 'View/lifecycle stop cancels scheduled work');
+  held.controller.setSpeed(4);
+  const restarted = held.controller.start();
+  await until(() => held.calls.length === 1);
+  assert.equal(held.calls[0].action, 'reset', 'Explicit restart always resets via C');
+  held.controller.stop();
+  assert.equal(await restarted, false);
+
+  let speedWait = false;
+  const sped = harness({ prepare: async (fields, { wait }) => { speedWait = true; await wait(600); } });
+  const spedDone = sped.controller.start();
+  await until(() => speedWait);
+  sped.controller.setSpeed(4);
+  const spedDispatched = await Promise.race([until(() => sped.calls.length === 1).then(() => true), delay(250).then(() => false)]);
+  sped.controller.stop();
+  assert.equal(await spedDone, false);
+  assert.equal(spedDispatched, true, 'Changing speed reschedules the current wait, not only future work');
+
+  let readableWait = false;
+  const readable = harness({ prepare: async (fields, { wait }) => { readableWait = true; await wait(80, false); } });
+  readable.controller.setSpeed(4);
+  const readableDone = readable.controller.start();
+  await until(() => readableWait);
+  await delay(35);
+  assert.equal(readable.calls.length, 0, 'Reduced-motion explanation dwell is readable even at 4x');
+  readable.controller.stop();
+  assert.equal(await readableDone, false);
+
+  console.log('PASS: guided controller sequence, response/replay gates, derived IDs, duplicate-start, pause/resume/speed, cancellation with honest in-flight acceptance, explicit reset restart, failure/no-retry, readable reduced-motion dwell and hash routing. Unit fixtures only; integrated C/browser checks remain manager-owned.');
+}
+async function audioChecks() {
+  const wav = Buffer.from(makeDemoWav(6));
+  assert.equal(wav.toString('ascii', 0, 4), 'RIFF');
+  assert.equal(wav.readUInt32LE(4), wav.length - 8);
+  assert.equal(wav.toString('ascii', 8, 12), 'WAVE');
+  assert.equal(wav.toString('ascii', 12, 16), 'fmt ');
+  assert.equal(wav.readUInt32LE(16), 16);
+  assert.equal(wav.readUInt16LE(20), 1, 'Uncompressed PCM');
+  assert.equal(wav.readUInt16LE(22), 1, 'Mono');
+  assert.equal(wav.readUInt32LE(24), 22050);
+  assert.equal(wav.readUInt32LE(28), 44100);
+  assert.equal(wav.readUInt16LE(32), 2);
+  assert.equal(wav.readUInt16LE(34), 16);
+  assert.equal(wav.toString('ascii', 36, 40), 'data');
+  assert.equal(wav.readUInt32LE(40), wav.length - 44);
+  assert.equal(wav.length, 44 + 12 * 22050 * 2);
+  let peak = 0, audible = 0;
+  for (let i = 44; i < wav.length; i += 2) {
+    const sample = Math.abs(wav.readInt16LE(i));
+    peak = Math.max(peak, sample);
+    if (sample > 100) audible++;
+  }
+  assert(peak > 1000 && peak < 8000, 'Audible, bounded quiet samples without clipping');
+  assert(audible > 200000, 'Generated PCM is not silence');
+  assert.equal(wav.readInt16LE(44), 0, 'Envelope starts without a click');
+  assert(Math.abs(wav.readInt16LE(wav.length - 2)) < 10, 'Envelope fades out');
+  assert.deepEqual(Buffer.from(makeDemoWav(6)), wav, 'Deterministic sample tone');
+  assert.notDeepEqual(Buffer.from(makeDemoWav(7)), wav, 'C IDs choose different sample pitches');
+
+  // Native media/URL test doubles only; no claim of browser decoding or audible output here.
+  class Media extends EventTarget {
+    constructor() { super(); this.paused = true; this.ended = false; this.error = null; this.src = ''; this.plays = 0; this.currentTime = 0; this.playResult = null; }
+    hasAttribute(name) { return name === 'src' && Boolean(this.src); }
+    removeAttribute(name) { if (name === 'src') this.src = ''; }
+    load() { this.ended = false; this.error = null; this.currentTime = 0; }
+    pause() { const changed = !this.paused; this.paused = true; if (changed) this.dispatchEvent(new Event('pause')); }
+    play() {
+      this.plays++;
+      if (this.playResult) return this.playResult;
+      this.paused = false;
+      this.dispatchEvent(new Event('play'));
+      return Promise.resolve();
+    }
+  }
+  const media = new Media();
+  const urls = new Map(), revoked = [];
+  let serial = 0, allowed = true, latest;
+  const player = createAudioPlayer(media, () => allowed, value => { latest = value; }, {
+    createObjectURL(blob) { assert(blob instanceof Blob); const url = `blob:unit/${++serial}`; urls.set(url, blob); return url; },
+    revokeObjectURL(url) { assert(urls.has(url), 'No duplicate revocation'); urls.delete(url); revoked.push(url); }
+  });
+  const file = new Blob([wav], { type: 'audio/wav' });
+  Object.defineProperty(file, 'name', { value: 'local.wav' });
+  player.sync(snapshot);
+  assert.equal(media.plays, 0, 'Receiving C state never autoplays');
+  assert.match(latest.message, /Generated sample tone.*not a recording/);
+  assert.equal(latest.available, true);
+  const firstTone = media.src;
+  await player.toggle();
+  assert.equal(media.plays, 1);
+  assert.equal(latest.playing, true);
+  // Unrelated adds/reversals should not restart a still-current record.
+  const node = add.playlists[0].nodes.at(-1);
+  const attachment = { file, fields: { playlist: 'main', title: node.title, artist: node.artist } };
+  player.sync(add, attachment);
+  assert.equal(media.src, firstTone);
+  assert.equal(latest.playing, true);
+  player.sync(fixture('select', add.playlists, [list('main', [1, 2, 3, 6], 6), base[1]]));
+  assert.equal(latest.playing, false);
+  assert.match(latest.message, /Local audio: local.wav.*this browser only/);
+  assert.equal(urls.get(media.src), file, 'File association uses the returned C ID');
+  assert(revoked.includes(firstTone));
+  const localUrl = media.src;
+  assert.equal(media.plays, 1, 'Selecting another C record requires another explicit Play');
+  await player.toggle();
+  media.ended = true; media.paused = true; media.dispatchEvent(new Event('ended'));
+  assert.equal(latest.playing, false);
+  assert.match(latest.message, /Finished/);
+  await player.toggle();
+  assert.equal(media.currentTime, 0);
+  player.sync(fixture('delete', add.playlists, base));
+  assert(revoked.includes(localUrl), 'Current deletion revokes its local file and selects C fallback without autoplay');
+  assert.equal(latest.playing, false);
+  assert.match(latest.message, /Generated sample tone/);
+
+  const secondaryAdd = fixture('add', base, [base[0], list('secondary', [4, 5, 8])], [
+    { kind: 'allocate', playlist: 'secondary', id: 8, title: 'Track 8', artist: 'Sample metadata', prev: null, next: null },
+    write(8, 'prev', null, 5, 'secondary'), write(5, 'next', null, 8, 'secondary'), write(null, 'tail', 5, 8, 'secondary')
+  ]);
+  validateState(secondaryAdd);
+  assert.equal(addedTrackId(secondaryAdd, 'secondary'), 8);
+  player.sync(secondaryAdd, { file, fields: { playlist: 'secondary', title: 'Track 8', artist: 'Sample metadata' } });
+  const secondaryUrl = [...urls].find(([, blob]) => blob === file)[0];
+  player.sync(fixture('merge', secondaryAdd.playlists, [list('main', [1, 2, 3, 4, 5, 8], 8), list('secondary', [])]));
+  assert.equal(media.src, secondaryUrl, 'Secondary local media survives a C merge into main');
+  assert.equal(latest.playing, false);
+  await player.toggle();
+  allowed = false;
+  await player.toggle();
+  assert.equal(media.paused, true, 'Pause remains available when permission to start is blocked');
+  await player.toggle();
+  assert.equal(latest.playing, false, 'Simulation/hidden/disconnected playback policy blocks Play');
+  const playsBefore = media.plays;
+  player.sync(snapshot);
+  assert(revoked.includes(secondaryUrl), 'Reset removes obsolete local associations');
+  assert.equal(media.plays, playsBefore, 'Reset/guided synchronization never autoplays');
+  allowed = true;
+  media.playResult = Promise.reject(Object.assign(new Error('Blocked'), { name: 'NotAllowedError' }));
+  await player.toggle();
+  assert.equal(latest.playing, false);
+  assert.match(latest.message, /blocked.*press Play again/);
+  assert.equal(latest.available, true, 'Blocked gesture is retryable explicitly');
+  const pendingPlay = deferred();
+  media.playResult = pendingPlay.promise;
+  const playing = player.toggle();
+  assert.equal(latest.playing, true, 'Pending Play can be cancelled with Pause');
+  await player.toggle();
+  pendingPlay.resolve();
+  await playing;
+  assert.equal(latest.playing, false, 'Stale play completion cannot relabel a cancelled attempt');
+  media.error = { code: 4 }; media.dispatchEvent(new Event('error'));
+  assert.equal(latest.available, false);
+  assert.match(latest.message, /Cannot decode/);
+  player.sync(fixture('reverse', base, base));
+  assert.match(latest.message, /Cannot decode/, 'Unrelated C responses retain decode error status');
+  player.pause();
+  assert.match(latest.message, /Cannot decode/, 'View/lifecycle pause retains an existing decode error');
+  player.dispose();
+  assert.equal(media.src, '');
+  assert.equal(urls.size, 0, 'Page exit detaches media and revokes every owned URL');
+  player.dispose();
+  player.sync(empty);
+  assert.equal(latest.available, false);
+  assert.match(latest.message, /No selected record/);
+  player.sync(snapshot);
+  assert.equal(latest.available, true, 'BFCache return can rebuild sample media without autoplay');
+  assert.equal(media.plays, playsBefore + 2, 'Only explicit accepted Play attempts call native play');
+  player.sync(snapshot, { file, fields: { playlist: 'main', title: 'Track 1', artist: 'Sample metadata' } });
+  assert.match(latest.message, /could not be attached uniquely/, 'Ambiguous C response cannot attach a file to an assumed ID');
+  assert.equal(urls.size, 1, 'Failed attachment leaves only the current generated sample URL');
+  const exitedPlay = deferred();
+  media.playResult = exitedPlay.promise;
+  const exited = player.toggle();
+  player.dispose();
+  exitedPlay.reject(Object.assign(new Error('Source unloaded'), { name: 'AbortError' }));
+  await exited;
+  assert.equal(latest.available, false);
+  assert.equal(latest.playing, false, 'Page exit invalidates pending native Play');
+  assert.equal(urls.size, 0);
+  console.log('PASS: valid audible bounded PCM/WAV, explicit playback policy, main/secondary C-ID file association, selection/deletion/reset, ended/blocked/error/cancelled Play, blob revocation and lifecycle rebuild. Native media doubles only; actual browser decoding remains integration-owned.');
+}
+(async () => {
+  await controllerChecks();
+  await audioChecks();
+  if (process.argv.includes('--unit')) console.log('UNIT ONLY: integrated DOM checks not run; default node web/check.cjs requires the full partner audio/disclosure DOM.');
+  else { checkDom(); console.log('PASS: full guided/audio DOM contract and safe native controls.'); }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+console.log('PASS: exact UTF-8 policy, snapshot/trace bounds, chronological allocation/visit/write/free projection, cyclic intermediate reverse, cross-list merge, before/after parity, truncation, large/reduced-motion autoplay policy and form encoding. Unit fixtures only.');
