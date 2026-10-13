@@ -50,7 +50,7 @@ IDs are positive integers, unique across the two lists for this process; they ar
 - `action=merge&playlist=main&source=secondary`: splice source onto destination in O(1), empty source, keep destination current unless destination was empty. Reject self-merge.
 - `action=reset`: restore small clearly labelled demo playlists. Generate fresh IDs rather than reusing removed IDs.
 
-Initial demo state: main has 3 records, secondary has 2. Titles/artists are sample metadata only; this is a silent simulation with no audio or files. C handles node metadata and playlist order. Server state is lost on restart.
+Initial demo state: main has 3 records, secondary has 2. Titles/artists are sample metadata only. C handles node metadata and playlist order, never audio. Demo offers browser-generated sample melodies or an optional local file associated with the C-returned ID; no file is uploaded or added to this API. Simulation remains silent. Server state is lost on restart.
 
 Errors: appropriate HTTP 400/404/405/413/415 status, `{"ok":false,"error":"Human-readable reason"}`, no partial mutation. Reject invalid IDs, unsupported actions/playlist IDs, oversized bodies, duplicate fields, invalid percent escapes, decoded NUL/control characters, and extra action fields where practical. Static file serving uses a strict allowlist; bind loopback only. Require expected local Host and reject foreign Origin on POST; no permissive CORS. Serve CSP allowing only own scripts/styles plus blob media, no inline script/event handlers.
 

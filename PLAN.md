@@ -1,14 +1,14 @@
 # Music Player & Doubly Linked List Lab — Delivery Plan
 
 ## Goal
-Build a polished, local playlist simulator for a second-year DSA demonstration. C owns every node and pointer mutation; HTML/CSS/JavaScript provides a default manual Demo view and a separate Simulation view with a left operation desk/right C-recorded replay and one-click guided tour. No Python backend, audio requirement, or JavaScript imitation of the linked list. `SIMULATION.md` defines the trace; `GUIDED_DEMO.md` defines the latest frontend-only views and sequential automation, with C unchanged.
+Build a polished, local playlist simulator for a second-year DSA demonstration. C owns every node and pointer mutation; HTML/CSS/JavaScript provides a default manual Demo view and a separate Simulation view with a left operation desk/right C-recorded replay and one-click guided tour. Demo offers explicit browser-only sample/local audio playback; Simulation stays silent. No Python backend, audio storage/upload in C, or JavaScript imitation of the linked list. `SIMULATION.md` defines the trace; `GUIDED_DEMO.md` defines the latest frontend-only views and sequential automation, with C unchanged.
 
 ## Scope and architecture
 - C: `SongNode` with stable ID, title, artist, `prev`, and `next`; `Playlist` with `head`, `tail`, `current`, and size. Implement create/add, delete, select, next/previous, display, reverse, concatenate, and cleanup.
 - Maintain two playlists. Concatenation transfers nodes to the destination and empties the source without copying songs. Define current-song behaviour for empty lists, boundary navigation, and deletion.
 - A small loopback-only C HTTP server serves `web/` and an API. Bound input sizes, validate requests, escape JSON, allowlist static paths, and reject cross-origin mutations. Keep transport code separate from syllabus algorithms.
 - API: `GET /api/state`; `POST /api/action` with URL-encoded fields (`action`, `playlist`, and action-specific values). JSON responses carry authoritative state, node identifiers/links, operation explanation, and changed-node identifiers. Errors preserve state.
-- UI: responsive silent simulation, two playlists, labelled forms, keyboard-accessible controls, empty/loading/error states, left-side operations and right-side replay with pause/step/replay/finish/speed controls.
+- UI: responsive Demo with prominent Play/Pause, generated sample melody and optional browser-local audio/volume; separate silent Simulation with compact guided Start, left operations and right C replay. Optional manual replay and C explanations use disclosures. Two playlists, labelled forms, keyboard-accessible controls and empty/loading/error states.
 - Visualizer: display `NULL`, `head`, `tail`, `current`, node IDs, directed SVG links and moving blocks. Capture actual C allocation/visit/pointer/free events with owned before snapshots; show each historical assignment and canonical final state. Explain logical IDs and committed replay, not live CPU debugging.
 - Style direction: a restrained record-deck lab, warm paper/ink palette, one vivid accent, readable type, purposeful pointer highlights, and reduced-motion support. No framework or runtime npm dependencies.
 - State is in memory for one local classroom session. No accounts, database, internet streaming, production deployment, or multi-user isolation.

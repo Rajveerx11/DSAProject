@@ -1,6 +1,8 @@
 # Side-by-side simulation update
 
 ## Acceptance
+This contract describes the original silent pointer-replay feature. `GUIDED_DEMO.md` supersedes its view/layout and audio scope: Demo now offers sample/local audio; separate Simulation remains silent and its manual controls/explanations live in disclosures. The C trace contract below is unchanged.
+
 Keep the established paper/ink/vermilion musiclab look. Desktop becomes an operation desk on the left and an always-visible, sticky pointer simulator on the right. On small screens use a usable stacked layout. Remove real audio/file/volume requirements: this is a silent playlist simulation with sample labels. C still performs every linked-list operation.
 
 The focal interaction is an operation replay: C-recorded node visits and pointer assignments illuminate cards/edges in order. Insert materializes a node; delete unlinks/removes it; navigation moves current; reverse rewires links then visibly rearranges node cards; merge connects and transfers Side B cards. Provide Auto-play steps, Pause/Continue, Previous step, Next step, Replay, Finish, and speed controls. Allow new operations by finishing the old replay rather than queuing stale clicks. Reduced motion shows an immediate final frame, but manual steps remain available. Clean up timers/animations on replay replacement and page hide. Never steal intentional keyboard focus.

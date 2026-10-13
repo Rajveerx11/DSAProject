@@ -1,6 +1,6 @@
 # Musiclab — records & pointers
 
-A silent playlist manager and side-by-side **doubly linked list simulator** for a second-year DSA demonstration. C owns the nodes and records actual visits and pointer assignments. HTML, CSS, and JavaScript replay that trace with moving blocks and directed arrows.
+A playlist manager with browser audio previews and a silent side-by-side **doubly linked list simulator** for a second-year DSA demonstration. C owns the nodes and records actual visits and pointer assignments. HTML, CSS, and JavaScript replay that trace with moving blocks and directed arrows.
 
 ## Run
 
@@ -24,9 +24,10 @@ The server binds only to loopback. This is a single-process, serial classroom ap
 
 ## Demo and simulation views
 
-- **Demo** (`http://localhost:8081/#demo`, also the default root page): manual playlist UI only, without pointer diagrams, replay controls or node-ID metadata. Use this first when demonstrating the working application.
+- **Demo** (`http://localhost:8081/#demo`, also the default root page): manual playlist UI without pointer diagrams or node-ID metadata. The prominent **Play/Pause** button plays the selected Side A record, with a Volume slider. Default previews are 12-second generated sample melodies, **not recordings of the named songs**. To play actual music, attach your own supported audio file in **Local audio** when adding a record; select that record in Side A and press Play. Files added to Side B keep their association when merged into A.
+- Playback always needs an explicit Play after changing selection. Deleting current/reset stops its audio; entering Simulation or hiding the page pauses playback. Local files never leave the browser and associations disappear on reload, deletion or reset. Unsupported files show a readable error; select another record or reset to recover.
 - **Simulation** (`http://localhost:8081/#simulation`): left operation desk and right C-recorded pointer canvas. Navigation preserves C state; it does not reset the playlists. Desktop panes scroll independently to keep guided controls visible; small screens stack the sections.
-- Click **Start tour** once for eight automatic real C actions: Reset → Add → Next → Previous → Select the added record → Delete it → Reverse A → Merge B into A. Fields fill automatically, a decorative cursor moves to highlighted controls, and every C-recorded frame completes before the next action. No OS cursor or keyboard focus is taken over.
+- Click **Start →** once for eight automatic real C actions: Reset → Add → Next → Previous → Select the added record → Delete it → Reverse A → Merge B into A. Fields fill automatically, a decorative cursor moves to highlighted controls, and every C-recorded frame completes before the next action. No OS cursor or keyboard focus is taken over.
 - **Start replaces both playlists with sample data**, as the visible warning states. Use **Pause/Resume**, **Stop** and guided **Speed** to control the tour. A new Start is explicit; duplicate starts and competing manual/replay operations are blocked while a tour is active or paused. Stop/view exit/page hiding prevents future actions but cannot undo a C request already sent. Request failures halt the tour; refresh after an uncertain response before restarting.
 - Reduced motion keeps the guided action sequence and readable explanations but omits moving cursor/FLIP and per-event playback. Manual frame inspection remains available after the tour.
 
@@ -34,9 +35,9 @@ The server binds only to loopback. This is a single-process, serial classroom ap
 
 - **Left:** current record, Add, Next/Previous, both playlists, Delete, Reverse, Merge, and Reset. This collection always displays committed C state.
 - **Right:** recorded pointer replay and operation explanations. The guided tour is idle until Start, so individual operations can still be demonstrated manually.
-- The demo starts with three sample records in **My playlist** and two in **Side B**. No real music, audio files, or playback is needed.
+- The demo starts with three sample records in **My playlist** and two in **Side B**. Simulation remains silent; no audio files are needed.
 - An operation automatically replays actual C allocation, comparison/visit, pointer-write, and free events. Watch `prev`, `next`, `head`, `tail`, and `current` change, one recorded assignment at a time.
-- Use **Pause/Continue**, **Previous step**, **Next step**, **Replay**, **Finish**, and **Speed**. Disable **Auto-play steps** for a viva-style manual walkthrough. Large traces (>80 events) start paused. Reduced motion immediately shows final state, while manual steps remain available without motion.
+- Open **Manual replay controls** below the diagram to use **Pause/Continue**, **Previous step**, **Next step**, **Replay**, **Finish**, and **Speed**. **C explanation & complexity** is another optional disclosure, keeping the default tour uncluttered. Disable **Auto-play steps** for a viva-style manual walkthrough. Large traces (>80 events) start paused. Reduced motion immediately shows final state, while manual steps remain available without motion.
 - Reverse visibly rearranges the same node blocks; Merge connects and moves Side B blocks into A without copying their IDs. Deleted allocations appear briefly as labelled freed ghosts.
 
 C commits before the animation begins. The right pane explicitly labels intermediate/historical frames: they are recorded history, not live CPU debugging. Intermediate pointer writes can temporarily break list invariants; only the final frame is the canonical committed state. Node IDs are logical identifiers, not memory addresses. Replay affects display only and does not mutate C or execute a separate JavaScript linked-list algorithm. Another tab's changes appear after **Refresh state**; every operation's before snapshot comes from C rather than a possibly stale browser snapshot.
@@ -50,7 +51,7 @@ C commits before the animation begins. The right pane explicitly labels intermed
 - IDs are process-wide and never reused during that server process, including after reset.
 - There are at most 200 songs across both playlists. Title and artist must be non-empty valid UTF-8, at most 127 bytes each, with no control characters. The backend trims ASCII spaces.
 
-State lives in RAM and disappears when the server stops. Track titles/artists are sample labels only. No audio files, uploads, persistence, or internet streaming.
+C state lives in RAM and disappears when the server stops. Initial titles/artists are sample labels; generated preview melodies do not represent those songs. Optional audio is a browser-only blob associated with a C-returned ID. No file uploads to C, persistence, or internet streaming.
 
 ## Where the DSA lives
 
@@ -60,7 +61,7 @@ State lives in RAM and disappears when the server stops. Track titles/artists ar
 | `src/api.h`, `src/api.c` | Validate commands; copy before state; capture and serialize real C events |
 | `src/server.c` | Loopback HTTP adapter and allowlisted static files |
 | `web/index.html`, `web/styles.css` | Accessible responsive player and pointer-lab layout |
-| `web/app.js` | Hash views, sequential guided requests, safe rendering, C-trace projection, arrows and native animations |
+| `web/app.js` | Browser-only sample/local audio, hash views, guided requests, safe C-trace projection, arrows and animations |
 | `tests/native.c`, `tests/trace.c`, `tests/api.mjs`, `web/check.cjs` | Pointer invariants, trace order/parity/lifetime/capacity, API, and projection checks |
 | `API.md`, `PLAN.md`, `SIMULATION.md`, `GUIDED_DEMO.md` | API, delivery plan, recorded replay and guided-view contracts |
 
@@ -121,7 +122,7 @@ node /tmp/musiclab-browser-tools/node_modules/playwright/cli.js install chromium
 NODE_PATH=/tmp/musiclab-browser-tools/node_modules make test-browser
 ```
 
-If Chromium needs system libraries, use Playwright's `install --with-deps chromium` command. Alternatively set `CHROMIUM_PATH` to an existing Chromium executable. The test owns an ephemeral C server and closes it on completion. It covers actual C-recorded frames and arrow geometry, visits, allocation/free ghosts, manual replay, Demo/Simulation routing and state preservation, the ordered eight-POST guided sequence and all recorded frames, visible control highlights, duplicate Start, pause/resume/stop/speed, in-flight acceptance and view exit, failure/no-retry, keyboard focus, reduced motion and both-view responsive layouts. Screenshots default to `/tmp/musiclab-simulator-evidence`; override `MUSICLAB_EVIDENCE` if needed. CI runs these checks and uploads screenshots. This vanilla JavaScript project has no TypeScript typecheck or bundler build step.
+If Chromium needs system libraries, use Playwright's `install --with-deps chromium` command. Alternatively set `CHROMIUM_PATH` to an existing Chromium executable. The test owns an ephemeral C server and closes it on completion. It covers native sample/local audio decoding and nonzero output samples, playback lifecycle and pending file edits, full active-card/control visibility through real tours at 768×768 and 1024×600, plus actual C-recorded frames and arrow geometry, visits, allocation/free ghosts, manual replay, Demo/Simulation routing and state preservation, the ordered eight-POST guided sequence and all recorded frames, visible control highlights, duplicate Start, pause/resume/stop/speed, in-flight acceptance and view exit, failure/no-retry, keyboard focus, reduced motion and both-view responsive layouts. Screenshots default to `/tmp/musiclab-simulator-evidence`; override `MUSICLAB_EVIDENCE` if needed. CI runs these checks and uploads screenshots. This vanilla JavaScript project has no TypeScript typecheck or bundler build step.
 
 ## Ten-minute demonstration
 

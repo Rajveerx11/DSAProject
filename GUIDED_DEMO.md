@@ -19,6 +19,13 @@
 - Retain all existing player/replay/diagram IDs and data attributes, no additional asset script (C allowlist unchanged).
 - DOM status/progress should expose idle/running/paused/stopped/complete/error through `#guided-demo[data-status]` for assertions. Guided controller owns this and locks controls through existing updateControls.
 
+## Latest user steering: audible Demo and simpler Simulation
+- Demo needs a prominent `#play-pause` button and actual sound. Browser-only generated **sample tones** are clearly labelled (not claimed as real licensed songs); optional local audio chosen when adding a record plays via blob URLs associated with C-returned IDs. C code/static routes remain unchanged.
+- Shared audio DOM: `#audio` (audio element, preload metadata, hidden native element), `#play-pause`, `#audio-status` (polite status), `#audio-file` (optional file input, accept audio/*), `#volume` (0..1 range, default .7). Play is explicit user gesture; report playback errors, pause when entering Simulation, keep selection/navigation/deletion/reset coherent, clean up unused blob URLs. No internet streaming or uploads to C.
+- Simplify Simulation: compact guided toolbar with Start/Pause/Stop/Speed, brief visible reset warning and progress; compact replay status/current assignment/counters; show manual replay controls in `#manual-replay-details` (details disclosure, closed initially). Preserve existing replay IDs. Additional C steps/complexity may be under a details disclosure. Keep factual C-history/ID distinction visible concisely.
+- Critical regression from independent review: active pointer card/fields must remain fully visible at 768x768 and 1024x600, not just 1440x1000. Compact guide and inspector or adapt layout so a full 140px card plus gutters fits; panning alone cannot fix insufficient space.
+- View/audio agents stay isolated; audio agent owns only app.js/check.cjs, view agent owns only index.html/styles.css. Manager updates browser tests/docs and integrates. Prior silent-only assertions/docs must be updated honestly.
+
 ## Isolation and ownership
 - View agent: only `web/index.html`, `web/styles.css`; Ponytail + Frontend Design, preserve incumbent paper/ink/vermilion visual language. No JS or C edits.
 - Controller agent: only `web/app.js`, `web/check.cjs`; Ponytail, route handling and sequential guided controller reuse existing functions. No HTML/CSS/C edits. Existing unit fixtures retained.
