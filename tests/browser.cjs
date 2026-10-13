@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { chromium } = require('playwright');
 const root = process.env.MUSICLAB_ROOT || path.resolve(__dirname, '..');
-const { projectTrace } = require(path.join(root, 'web/app.js'));
+const { projectTrace, makeDemoWav } = require(path.join(root, 'web/app.js'));
 
 (async () => {
   const url = process.env.MUSICLAB_URL || 'http://127.0.0.1:18080';
@@ -91,9 +91,109 @@ const { projectTrace } = require(path.join(root, 'web/app.js'));
     assert.equal(await page.locator('#pointer-lab').isVisible(), false);
     assert.equal(await page.locator('#guided-demo').isVisible(), false);
     assert.equal(await page.locator('.node-card').count(), 0, 'Demo does not build a hidden visualization');
+    // Exercise native decoding and nonzero audio samples, not just a Play label.
+    assert.equal(await page.locator('#play-pause').isVisible(), true);
+    assert.equal(await page.locator('#play-pause').isDisabled(), false);
+    assert.equal(await page.locator('#audio').evaluate(audio=>audio.paused), true);
+    await page.evaluate(()=>{
+      window.revokedAudioURLs=[];
+      const revoke=URL.revokeObjectURL.bind(URL);
+      URL.revokeObjectURL=url=>{window.revokedAudioURLs.push(url);revoke(url);};
+    });
+    const playAudio = async () => {
+      await page.locator('#play-pause').click();
+      await page.waitForFunction(()=>{const audio=document.getElementById('audio');return !audio.paused&&audio.currentTime>.15&&audio.readyState>=2;});
+      assert.equal(await page.locator('#play-pause').getAttribute('aria-pressed'),'true');
+    };
+    await playAudio();
+    assert.match(await page.locator('#audio-status').textContent(), /Generated sample tone/);
+    await page.evaluate(async()=>{
+      const context=new AudioContext();
+      const analyser=context.createAnalyser(); analyser.fftSize=512;
+      context.createMediaElementSource(document.getElementById('audio')).connect(analyser);
+      analyser.connect(context.destination); await context.resume();
+      window.audioProbe={context,analyser};
+    });
+    const audioEnergy = () => {
+      const samples=new Float32Array(window.audioProbe.analyser.fftSize);
+      window.audioProbe.analyser.getFloatTimeDomainData(samples);
+      return samples.reduce((sum,value)=>sum+value*value,0)/samples.length>0.000001;
+    };
+    await page.waitForFunction(audioEnergy);
+    await page.locator('#volume').focus(); await page.locator('#volume').press('Home'); await page.locator('#volume').press('ArrowRight');
+    assert.equal(await page.locator('#audio').evaluate(audio=>audio.volume), .05);
+    await page.locator('#play-pause').click();
+    assert.equal(await page.locator('#audio').evaluate(audio=>audio.paused), true);
+    assert.equal(await page.locator('#play-pause').getAttribute('aria-pressed'),'false');
+    await playAudio();
+    await page.evaluate(()=>{document.getElementById('audio').currentTime=11.95;});
+    await page.waitForFunction(()=>document.getElementById('audio').ended);
+    assert.equal(await page.locator('#play-pause').textContent(),'Play');
+    await playAudio(); await switchView('simulation');
+    assert.equal(await page.locator('#audio').evaluate(audio=>audio.paused),true,'Simulation pauses Demo sound');
+    assert.equal(await page.locator('#play-pause').isVisible(),false);
+    await switchView('demo');
+    const localFile = name => ({name,mimeType:'audio/wav',buffer:Buffer.from(makeDemoWav(41))});
+    await page.locator('#title').fill('Local A'); await page.locator('#artist').fill('Student');
+    await page.locator('#audio-file').setInputFiles(localFile('local-a.wav'));
+    let audioData=await operation(page.locator('#add-submit'),'add');
+    const localA=audioData.playlists[0].nodes.at(-1).id;
+    assert.equal(await page.locator('#audio-file').evaluate(input=>input.files.length),0);
+    await operation(page.locator(`#main-tracks .track-select[data-id="${localA}"]`),'select');
+    assert.match(await page.locator('#audio-status').textContent(),/Local audio: local-a.wav/);
+    assert.equal(await page.locator('#audio').evaluate(audio=>audio.paused),true,'Selection changes require explicit Play');
+    await playAudio(); await page.waitForFunction(audioEnergy);
+    const localAURL=await page.locator('#audio').evaluate(audio=>audio.src);
+    await page.locator('#destination').selectOption('secondary');
+    await page.locator('#title').fill('Local B'); await page.locator('#artist').fill('Student');
+    await page.locator('#audio-file').setInputFiles(localFile('local-b.wav'));
+    audioData=await operation(page.locator('#add-submit'),'add');
+    const localB=audioData.playlists[1].nodes.at(-1).id;
+    await operation(page.locator('#reverse-main'),'reverse');
+    assert.equal(await page.locator('#audio').evaluate(audio=>audio.src),localAURL,'Reverse preserves current audio association');
+    await operation(page.locator('#merge'),'merge');
+    await operation(page.locator(`#main-tracks .track-select[data-id="${localB}"]`),'select');
+    assert.match(await page.locator('#audio-status').textContent(),/Local audio: local-b.wav/,'Side B file follows its C ID through merge');
+    await playAudio(); await page.waitForFunction(audioEnergy);
+    const localBURL=await page.locator('#audio').evaluate(audio=>audio.src);
+    await operation(page.locator(`#main-tracks .delete-track[data-id="${localB}"]`),'delete');
+    assert.equal(await page.locator('#audio').evaluate(audio=>audio.paused),true,'Deleting current stops its audio');
+    assert.equal(await page.evaluate(url=>window.revokedAudioURLs.includes(url),localBURL),true,'Deleted local blob released');
+    await operation(page.locator('#reset'),'reset');
+    assert.equal(await page.evaluate(url=>window.revokedAudioURLs.includes(url),localAURL),true,'Reset releases other local files');
+    assert.match(await page.locator('#audio-status').textContent(),/Generated sample tone/);
+    await page.locator('#destination').selectOption('main');
+    // New edits/files during an accepted add must not be cleared or attached to the wrong C ID.
+    await page.locator('#title').fill('Pending audio'); await page.locator('#artist').fill('Student');
+    await page.locator('#audio-file').setInputFiles(localFile('accepted.wav'));
+    let acceptedAudioResolve,releaseAudioResolve;
+    const acceptedAudio=new Promise(resolve=>{acceptedAudioResolve=resolve;});
+    const releaseAudio=new Promise(resolve=>{releaseAudioResolve=resolve;});
+    await page.route('**/api/action',async route=>{const response=await route.fetch();acceptedAudioResolve();await releaseAudio;await route.fulfill({response});});
+    const pendingAudio=operation(page.locator('#add-submit'),'add'); await acceptedAudio;
+    await page.locator('#title').fill('New unsent title');
+    await page.locator('#audio-file').setInputFiles(localFile('unsent.wav'));
+    releaseAudioResolve(); audioData=await pendingAudio; await page.unroute('**/api/action');
+    assert.equal(await page.locator('#title').inputValue(),'New unsent title');
+    assert.equal(await page.locator('#audio-file').evaluate(input=>input.files[0].name),'unsent.wav');
+    const pendingId=audioData.playlists[0].nodes.at(-1).id;
+    await operation(page.locator(`#main-tracks .track-select[data-id="${pendingId}"]`),'select');
+    assert.match(await page.locator('#audio-status').textContent(),/Local audio: accepted.wav/);
+    await page.locator('#audio-file').setInputFiles({name:'unsupported.wav',mimeType:'audio/wav',buffer:Buffer.from('not a playable waveform')});
+    await page.locator('#title').fill('Unsupported audio'); await page.locator('#artist').fill('Student');
+    audioData=await operation(page.locator('#add-submit'),'add');
+    const badId=audioData.playlists[0].nodes.at(-1).id;
+    await operation(page.locator(`#main-tracks .track-select[data-id="${badId}"]`),'select');
+    await page.waitForFunction(()=>document.getElementById('audio').error!==null);
+    assert.match(await page.locator('#audio-status').textContent(),/Cannot decode/);
+    assert.equal(await page.locator('#play-pause').isDisabled(),true);
+    await operation(page.locator('#reset'),'reset');
+    assert.equal(await page.locator('#play-pause').isDisabled(),false,'Reset recovers from unsupported media');
+    await page.evaluate(async()=>{await window.audioProbe.context.close();document.getElementById('volume').value='.7';document.getElementById('volume').dispatchEvent(new Event('input'));});
+    console.log('PASS: native browser sample/local audio decoding and nonzero output samples, Play/Pause/ended, keyboard volume, Simulation silence, C-ID association through reverse/merge/deletion/reset, blob cleanup, pending file edits and unsupported-file recovery.');
     const demoBefore = await state();
     await operation(page.locator('#next'), 'next', true);
-    assert.equal(await page.locator('.node-card').count(), 0, 'Manual Demo operations stay visualization-free');
+    assert.equal(await page.locator('.node-card:visible').count(), 0, 'Manual Demo operations stay visualization-free');
     assert.equal(await page.locator('#current-title').textContent(), demoBefore.playlists[0].nodes[1].title);
     await page.screenshot({path:path.join(output,'demo-desktop.png'),fullPage:true});
     const demoAfter = await state();
@@ -108,7 +208,10 @@ const { projectTrace } = require(path.join(root, 'web/app.js'));
     await page.waitForFunction(()=>location.hash==='#simulation');
     await page.reload(); await ready();
     assert.equal(await page.locator('#pointer-lab').isVisible(), true);
-    assert.equal(await page.locator('audio, input[type="file"]').count(), 0, 'Silent simulation, no music files required');
+    assert.equal(await page.locator('#audio').evaluate(audio=>audio.paused), true, 'Simulation is silent');
+    assert.equal(await page.locator('#audio-file').isVisible(), false);
+    assert.equal(await page.locator('#manual-replay-details').getAttribute('open'), null, 'Manual replay starts uncluttered');
+    await page.locator('#manual-replay-details > summary').click();
     const desk = await page.locator('.operation-desk').boundingBox();
     const lab = await page.locator('#pointer-lab').boundingBox();
     assert(desk.x + desk.width < lab.x && Math.abs(desk.y-lab.y)<2, 'Controls left, pointer canvas right in same viewport');
@@ -215,6 +318,8 @@ const { projectTrace } = require(path.join(root, 'web/app.js'));
     assert.equal(await page.evaluate(()=>document.activeElement.id), 'replay-auto'); await page.unroute('**/api/action');
     for (const id of data.playlists[0].nodes.map(node=>node.id)) { data=await operation(page.locator(`#main-tracks .delete-track[data-id="${id}"]`),'delete'); await page.locator('#replay-finish').click(); }
     assert.equal(data.playlists[0].current,null); assert.equal(await page.locator('#next').isDisabled(),true);
+    assert.equal(await page.locator('#play-pause').isDisabled(),true,'Empty Side A cannot play');
+    assert.equal(await page.locator('#audio').getAttribute('src'),null,'Empty Side A detaches audio');
     data=await operation(page.locator('#merge'),'merge'); await stepAll(data);
     data=await operation(page.locator('#reset'),'reset'); await final();
     for (const [width,height,name] of [[1440,1000,'desktop'],[768,1024,'tablet'],[390,844,'mobile'],[320,812,'small-mobile']]) {
@@ -243,7 +348,7 @@ const { projectTrace } = require(path.join(root, 'web/app.js'));
       if (captured && response.url() === `${url}/api/action`) captured.responses.push(response.json());
     };
     page.on('request', recordRequest); page.on('response', recordResponse);
-    await page.evaluate(()=>{
+    const installGuideProbes = () => page.evaluate(()=>{
       window.guideFrames = {};
       window.guideHighlights = [];
       window.guideGraphVisibility = [];
@@ -268,11 +373,14 @@ const { projectTrace } = require(path.join(root, 'web/app.js'));
         if (card) {
           const box=card.getBoundingClientRect();
           const lab=document.getElementById('pointer-lab').getBoundingClientRect();
-          const top=lab.top+document.querySelector('.replay-inspector').getBoundingClientRect().height;
-          window.guideGraphVisibility.push({label,visible:box.top>=top&&box.bottom<=Math.min(innerHeight,lab.bottom),top:box.top,bottom:box.bottom,clipTop:top,clipBottom:lab.bottom});
+          const top=Math.max(0,lab.top,document.querySelector('.replay-inspector').getBoundingClientRect().bottom);
+          const bounds=card.closest('.node-scroll').getBoundingClientRect();
+          const clipTop=Math.max(top,bounds.top),clipBottom=Math.min(innerHeight,lab.bottom,bounds.bottom);
+          window.guideGraphVisibility.push({label,visible:box.top>=clipTop&&box.bottom<=clipBottom,top:box.top,bottom:box.bottom,clipTop,clipBottom});
         }
       }).observe(document.getElementById('replay-meter'), {attributes:true,attributeFilter:['value']});
     });
+    await installGuideProbes();
     captured = {fields:[],responses:[]};
     await page.locator('#guided-start').click();
     await page.locator('#guided-start').dispatchEvent('click'); // Programmatic double Start is guarded too.
@@ -315,6 +423,23 @@ const { projectTrace } = require(path.join(root, 'web/app.js'));
     assert.equal(await page.locator('#next').isDisabled(),false);
     await page.screenshot({path:path.join(output,'guided-complete.png'),fullPage:true});
 
+    // The former clipped-card cases need full real tours, not just idle screenshots.
+    for (const [width,height] of [[768,768],[1024,600]]) {
+      await page.setViewportSize({width,height}); await page.reload(); await ready();
+      await page.locator('#guided-speed').selectOption('4'); await installGuideProbes();
+      captured={fields:[],responses:[]};
+      await page.locator('#guided-start').click();
+      await page.waitForFunction(()=>document.getElementById('guided-demo').dataset.status==='complete');
+      assert.deepEqual(captured.fields.map(fields=>fields.action),['reset','add','next','previous','select','delete','reverse','merge']);
+      const visibility=await page.evaluate(()=>({cards:window.guideGraphVisibility,controls:window.guideHighlights}));
+      assert(visibility.cards.length>=25,`${width}x${height}: actual pointer frames measured`);
+      assert.deepEqual(visibility.cards.filter(card=>!card.visible),[],`${width}x${height}: full active C card fits: ${JSON.stringify(visibility.cards.filter(card=>!card.visible))}`);
+      assert.deepEqual(visibility.controls.filter(control=>!control.visible),[],`${width}x${height}: automatic controls fit`);
+      assert.equal(await page.locator('#audio').evaluate(audio=>audio.paused),true);
+      await page.screenshot({path:path.join(output,`guided-${width}x${height}.png`),fullPage:true});
+      console.log(`PASS: guided ${width}x${height} full-card/control visibility (${visibility.cards.length} C frames).`);
+    }
+    await page.setViewportSize({width:1440,height:1000}); await page.reload(); await ready();
     // Stop/view-exit cannot undo a C POST that was already accepted, but must stop future work.
     let acceptedResolve; let releaseResolve;
     const accepted=new Promise(resolve=>{acceptedResolve=resolve;});
@@ -366,7 +491,7 @@ const { projectTrace } = require(path.join(root, 'web/app.js'));
     for (const [width,height,name] of [[1440,1000,'desktop'],[768,1024,'tablet'],[390,844,'mobile'],[320,812,'small-mobile']]) {
       await page.setViewportSize({width,height});
       for (const view of ['demo','simulation']) {
-        await page.goto(`${url}/#${view}`); await ready();
+        await page.goto(`${url}/#${view}`); await page.reload(); await ready();
         await page.waitForFunction(expected=>document.body.dataset.view===expected,view);
         await page.evaluate(()=>window.scrollTo(0,0));
         assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,`${view}/${name}: no overflow`);
