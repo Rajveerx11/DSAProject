@@ -1,41 +1,77 @@
-# Side-by-side simulation update
+# Recorded Pointer Simulation
 
-## Acceptance
-This contract describes the original silent pointer-replay feature. `GUIDED_DEMO.md` supersedes its view/layout and audio scope: Demo now offers sample/local audio; separate Simulation remains silent and its manual controls/explanations live in disclosures. The C trace contract below is unchanged.
+[Back to README](README.md) · [API](API.md) · [Guided demo](GUIDED_DEMO.md)
 
-Keep the established paper/ink/vermilion musiclab look. Desktop becomes an operation desk on the left and an always-visible, sticky pointer simulator on the right. On small screens use a usable stacked layout. Remove real audio/file/volume requirements: this is a silent playlist simulation with sample labels. C still performs every linked-list operation.
+Simulation displays a historical replay of real C operations. The collection shows committed state while the pointer canvas can show intermediate assignments. This is not a live CPU debugger, and replay does not mutate the backend.
 
-The focal interaction is an operation replay: C-recorded node visits and pointer assignments illuminate cards/edges in order. Insert materializes a node; delete unlinks/removes it; navigation moves current; reverse rewires links then visibly rearranges node cards; merge connects and transfers Side B cards. Provide Auto-play steps, Pause/Continue, Previous step, Next step, Replay, Finish, and speed controls. Allow new operations by finishing the old replay rather than queuing stale clicks. Reduced motion shows an immediate final frame, but manual steps remain available. Clean up timers/animations on replay replacement and page hide. Never steal intentional keyboard focus.
+## Using manual replay
 
-Show the active assignment, comparison/visit count, progress, highlighted source/target, NULL/head/tail/current, and backend complexity. Labels explicitly distinguish historical/intermediate replay from committed C state. The graph is a display projection of recorded events, not a JS implementation of playlist algorithms. Geometry movement uses Web Animations/FLIP and directed SVG arrows; no animation library/runtime dependency. For long lists scroll internally and keep the active event visible.
+1. Open Simulation and expand **Manual replay controls**.
+2. Disable **Auto-play steps** to inspect an operation manually.
+3. Perform Add, Select, Delete, Next/Previous, Reverse, or Merge.
+4. Use **Previous step** / **Next step** to inspect the before snapshot and recorded events.
+5. Use **Replay**, **Pause/Continue**, speed, or **Finish** to control the display.
 
-## Shared trace contract
-Preserve existing response and action fields. Add `operation.trace`:
+The canvas labels the assignment, progress, visited comparisons, pointer writes, logical IDs, NULL links, and endpoint/current markers. Freed nodes can appear briefly as labelled ghosts. Reverse rearranges existing cards; merge moves existing IDs between lists without copying nodes.
+
+A new mutation finishes the old display replay before requesting C work. Large traces with more than 80 events start paused. Reduced motion shows the final state immediately for ordinary autoplay, while manual inspection remains available. Guided sequencing is described separately in [GUIDED_DEMO.md](GUIDED_DEMO.md).
+
+## Trace payload
+
+Every successful state response includes `operation.trace`:
+
+| Field | Meaning |
+| --- | --- |
+| `before` | Two copied playlist objects using the same shape as top-level `playlists` |
+| `events` | Ordered events captured from synchronous C observers |
+| `truncated` | Whether the capture limit was exceeded |
+
+Event examples below illustrate individual shapes, not one complete operation:
 
 ```json
-{
-  "before": ["same two playlist objects/shapes as top-level playlists, copied before mutation"],
-  "events": [
-    {"kind":"allocate","playlist":"main","id":6,"title":"Track D","artist":"Sample","prev":null,"next":null},
-    {"kind":"visit","playlist":"main","id":1},
-    {"kind":"pointer","playlist":"main","id":6,"field":"prev","from":null,"to":3},
-    {"kind":"pointer","playlist":"main","id":null,"field":"tail","from":3,"to":6},
-    {"kind":"free","playlist":"main","id":6}
-  ],
-  "truncated": false
-}
+[
+  {"kind":"allocate","playlist":"main","id":6,"title":"Track D","artist":"Sample","prev":null,"next":null},
+  {"kind":"visit","playlist":"main","id":1},
+  {"kind":"pointer","playlist":"main","id":6,"field":"prev","from":null,"to":3},
+  {"kind":"pointer","playlist":"main","id":null,"field":"tail","from":3,"to":6},
+  {"kind":"free","playlist":"main","id":6}
+]
 ```
 
-- `playlist` is `main` or `secondary`.
-- Node pointer events: numeric `id`, field `prev`/`next`. Playlist pointer events: `id: null`, field `head`/`tail`/`current`. From/to IDs or null.
-- Visit emitted immediately before each actual ID comparison in C. Pointer event recorded at the corresponding actual C assignment. Allocate is emitted after successful allocation/metadata initialization, before linking. Free emitted before freeing.
-- Before snapshots must come from C, not the browser's possibly stale previous state. Final top-level playlists remain authoritative. After the last event, UI uses that final snapshot for canonical membership/order/size. During intermediate merge/reverse frames, render allocation records independently of traversal to avoid cycles; cross-list links may be temporarily visible.
-- Optional observer/callback around existing DLL functions is acceptable; keep their algorithms readable and unchanged when tracing is disabled. Avoid duplicating linked-list algorithms in the API or frontend. Avoid redundant search passes where practical.
-- Capture only accepted operations. Invalid requests must preserve previous state AND trace. Initial/reset traces may be empty if `before` equals the final initial state and reset is explicitly a committed replacement, not fabricated free/allocate instructions.
-- Bound events to at least `3 * SONG_LIMIT + 32`, and report truncation honestly. Normal allowed operations up to 200 nodes must not truncate. Keep response capacity sufficient for worst-case escaped before+after metadata and trace (512 KiB is sufficient with compact events); test it.
+| Kind | When recorded | Fields beyond `kind` / `playlist` |
+| --- | --- | --- |
+| `allocate` | After allocation/metadata initialization, before linking | New `id`, `title`, `artist`, `prev`, `next` |
+| `visit` | Immediately before an actual ID comparison in `playlist_find` | Compared `id` |
+| `pointer` | At the actual C assignment | Owner `id`, `field`, old `from`, new `to` |
+| `free` | After unlinking, before freeing memory | Removed `id` |
 
-## Isolation / ownership
-Backend worktree: src/ and tests/native.c only; add tests/trace.c if useful and update Makefile only for that native target. Frontend worktree: web/ only, including check.cjs. Manager owns integration, API/browser regression tests, docs and CI. Both agents load Ponytail. Frontend also loads Frontend Design; preserve visual language. No agent pushes, merges, resets, or edits another worktree.
+`playlist` is `main` or `secondary`. Numeric owner IDs identify node fields (`prev`, `next`); `id: null` identifies playlist fields (`head`, `tail`, `current`). Pointer values use IDs or null. An assignment can be recorded even when old and new values are equal. The visit count measures recorded ID comparisons, not every loop iteration in every algorithm.
 
-## Verification
-Trace tests must prove actual pointer-event order, visited IDs, snapshot ownership/lifetime, invalid-operation preservation, reset semantics, before/after parity, and full occupancy capacity. Existing native/API/sanitizer tests remain. Update browser tests for the deliberate removal of audio and add desktop left/right geometry, live intermediate versus final frames, insertion/deletion/reverse/merge/navigation, pause/step/replay/finish/speed, replacement/interruption, reduced motion, keyboard and pending-focus behaviour, safe long metadata, responsive screenshots and no console errors. Restart the owned demo server on port 8081 after validation; verify Musiclab UI and API content from Windows, not just HTTP 200.
+## Frame model
+
+For N events:
+
+| Frame | Display |
+| --- | --- |
+| 0 | C-owned before snapshot |
+| 1 through N | Before snapshot with the first k recorded events applied |
+| N + 1 | Authoritative committed top-level playlists |
+
+Intermediate reversal/merge/unlink writes may temporarily break list invariants, create cycles, or cross playlist boundaries. The frontend projects allocations by ID independently of list traversal. It uses the final snapshot for canonical order, size, and membership.
+
+Frontend validation checks snapshot shape, bounds, allocation lifetime, pointer owner/target validity, old `from` values, and full-trace parity with final state. Truncated history is marked rather than represented as complete. Normal supported operations at the 200-song limit are expected to fit within 632 events and the 512 KiB response buffer; capacity tests exercise this boundary.
+
+## Ownership and failure behavior
+
+Before snapshots come from C immediately before capture, not from a potentially stale tab. Events own copied IDs/metadata and never expose raw or freed addresses. Invalid actions preserve the previous state and trace.
+
+Initial/reset state uses an empty trace with `before` equal to the new committed sample state. Reset is explicitly a replacement; it does not fabricate allocation/free instructions for the old lists. Reset still uses fresh IDs within the running process.
+
+## Validation map
+
+- `tests/native.c`: pointer invariants, ownership behavior, observer behavior.
+- `tests/trace.c`: actual event order, visited IDs, replay parity, copied snapshot lifetime, rejected/allocation-failure preservation, reset, full-capacity serialization.
+- `web/check.cjs`: projection, invalid trace rejection, bounds, autoplay/reduced-motion policy.
+- `tests/browser.cjs`: real C-backed frames, geometry, ghosts, replay controls, routing, responsive behavior, and focus expectations.
+
+See [testing](docs/TESTING.md) for commands and the distinction between unit and real-browser validation.
