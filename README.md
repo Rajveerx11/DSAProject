@@ -63,6 +63,8 @@ wsl.exe --cd /mnt/c/DSAProject -- make
 wsl.exe --cd /mnt/c/DSAProject -- ./build/musiclab --port 8081
 ```
 
+Or double-click **`start.bat`**: it builds in WSL, picks a free temporary port, starts the server in its own window (close it to stop), and opens `http://127.0.0.1:<port>/`. It uses `127.0.0.1` rather than `localhost` because WSL forwards IPv4 only, and some browsers resolve `localhost` to IPv6 `::1`.
+
 ### First walkthrough
 
 1. In **Demo**, select a Side A record and press **Play**. Add your own record, optionally attaching a supported local audio file.
