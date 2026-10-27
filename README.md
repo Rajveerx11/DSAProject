@@ -65,6 +65,8 @@ wsl.exe --cd /mnt/c/DSAProject -- ./build/musiclab --port 8081
 
 **Windows without WSL:** double-click **`start.bat`**. It compiles with Visual Studio's C compiler (`cl`, from the free "C++ Build Tools"), picks a free temporary port, starts `build\musiclab.exe` in its own window (close it to stop), and opens `http://127.0.0.1:<port>/`. It uses `127.0.0.1` rather than `localhost` because the server listens on IPv4 only, and some browsers try IPv6 `::1` for `localhost`. The steps live in `start.ps1`.
 
+**Backend only (no browser):** double-click **`backend.bat`**. It builds the same way, starts the C server minimized, and opens a menu where you type inputs (add, select, delete, next, previous, reverse, merge, reset). After each input it prints the C operations performed (malloc, comparisons, pointer writes, free) and both lists with their `prev`/`next` links. Choose `0` to exit and stop the server. The steps live in `backend.ps1`.
+
 ### First walkthrough
 
 1. In **Demo**, select a Side A record and press **Play**. Add your own record, optionally attaching a supported local audio file.
