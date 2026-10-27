@@ -1,22 +1,46 @@
 #define _POSIX_C_SOURCE 200809L
 #include "api.h"
 
-#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
-#include <netinet/in.h>
-#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
+
+#ifdef _WIN32
+/* Windows build: Winsock and the MSVC runtime stand in for the POSIX calls below. */
+#include <winsock2.h>
+#include <io.h>
+#include <BaseTsd.h>
+#pragma comment(lib, "ws2_32.lib")
+typedef SOCKET Socket;
+typedef SSIZE_T ssize_t;
+#define BAD_SOCKET INVALID_SOCKET
+#define close_socket closesocket
+#define poll WSAPoll
+#define SHUT_WR SD_SEND
+#define strcasecmp _stricmp
+#define strncasecmp _strnicmp
+#define O_NOFOLLOW 0
+#define O_NONBLOCK 0
+#define S_ISREG(mode) (((mode) & S_IFMT) == S_IFREG)
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <poll.h>
 #include <strings.h>
 #include <sys/socket.h>
-#include <sys/stat.h>
 #include <sys/time.h>
-#include <time.h>
 #include <unistd.h>
+typedef int Socket;
+#define BAD_SOCKET (-1)
+#define close_socket close
+#define O_BINARY 0
+#endif
 
 #define HEADER_CAP 8192
 #define READ_TIMEOUT_MS 2000
@@ -34,12 +58,26 @@ static void stop_server(int sig)
 
 static int64_t clock_ms(void)
 {
+#ifdef _WIN32
+    return (int64_t)GetTickCount64();
+#else
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0) return -1;
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+#endif
 }
 
-static ssize_t receive(int fd, void *out, size_t cap, int64_t deadline)
+static bool accept_retry(void)
+{
+#ifdef _WIN32
+    int code = WSAGetLastError();
+    return code == WSAEWOULDBLOCK || code == WSAECONNRESET || code == WSAEINTR;
+#else
+    return errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK || errno == ECONNABORTED;
+#endif
+}
+
+static ssize_t receive(Socket fd, void *out, size_t cap, int64_t deadline)
 {
     while (!stopping) {
         int64_t now = clock_ms();
@@ -48,14 +86,14 @@ static ssize_t receive(int fd, void *out, size_t cap, int64_t deadline)
         int rc = poll(&ready, 1, (int)(deadline - now));
         if (rc < 0 && errno == EINTR) continue;
         if (rc <= 0) return -1;
-        ssize_t n = recv(fd, out, cap, 0);
+        ssize_t n = recv(fd, out, (int)cap, 0);
         if (n < 0 && errno == EINTR) continue;
         return n;
     }
     return -1;
 }
 
-static void close_connection(int fd)
+static void close_connection(Socket fd)
 {
     /* Flush the response before closing unread rejected input (otherwise TCP can reset
        and discard queued response bytes). Never drain an attacker-controlled stream
@@ -70,14 +108,14 @@ static void close_connection(int fd)
             drained += (size_t)n;
         }
     }
-    close(fd);
+    close_socket(fd);
 }
 
-static bool send_all(int fd, const void *data, size_t length)
+static bool send_all(Socket fd, const void *data, size_t length)
 {
     const char *p = data;
     while (length && !stopping) {
-        ssize_t n = send(fd, p, length, 0);
+        ssize_t n = send(fd, p, (int)length, 0);
         if (n < 0 && errno == EINTR) continue;
         if (n <= 0) return false;
         p += n;
@@ -101,7 +139,7 @@ static const char *reason(int status)
     }
 }
 
-static void respond(int fd, int status, const char *type, const void *data, size_t length,
+static void respond(Socket fd, int status, const char *type, const void *data, size_t length,
                     const char *allow)
 {
     char header[2048];
@@ -119,7 +157,7 @@ static void respond(int fd, int status, const char *type, const void *data, size
         (void)send_all(fd, data, length);
 }
 
-static void error_response(int fd, int status, const char *message)
+static void error_response(Socket fd, int status, const char *message)
 {
     /* Every caller supplies a fixed ASCII literal, never reflected request input. */
     char body[512];
@@ -128,7 +166,7 @@ static void error_response(int fd, int status, const char *message)
         respond(fd, status, "application/json; charset=utf-8", body, (size_t)n, NULL);
 }
 
-static void method_error(int fd, const char *path)
+static void method_error(Socket fd, const char *path)
 {
     const char body[] = "{\"ok\":false,\"error\":\"Wrong method for this endpoint.\"}";
     respond(fd, 405, "application/json; charset=utf-8", body, sizeof(body) - 1,
@@ -197,7 +235,7 @@ static bool form_type(const char *type)
     return !strcasecmp(rest, "charset=UTF-8");
 }
 
-static int read_request(int fd, unsigned port, Request *request)
+static int read_request(Socket fd, unsigned port, Request *request)
 {
     char input[HEADER_CAP + 1];
     size_t used = 0;
@@ -293,7 +331,7 @@ static int read_request(int fd, unsigned port, Request *request)
     return 200;
 }
 
-static void serve_static(int fd, const char *path)
+static void serve_static(Socket fd, const char *path)
 {
     const char *file = NULL, *type = NULL;
     if (!strcmp(path, "/") || !strcmp(path, "/index.html")) {
@@ -307,7 +345,7 @@ static void serve_static(int fd, const char *path)
     } else {
         error_response(fd, 404, "Static path not allowed."); return;
     }
-    int asset = open(file, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+    int asset = open(file, O_RDONLY | O_BINARY | O_NOFOLLOW | O_NONBLOCK);
     if (asset < 0) { error_response(fd, 404, "Static file not available."); return; }
     struct stat statbuf;
     if (fstat(asset, &statbuf) < 0 || !S_ISREG(statbuf.st_mode)
@@ -319,7 +357,7 @@ static void serve_static(int fd, const char *path)
     if (!data) { close(asset); error_response(fd, 500, "Allocation failed."); return; }
     size_t used = 0;
     while (used < size) {
-        ssize_t n = read(asset, data + used, size - used);
+        ssize_t n = read(asset, data + used, (unsigned)(size - used));
         if (n < 0 && errno == EINTR) continue;
         if (n <= 0) break;
         used += (size_t)n;
@@ -330,7 +368,7 @@ static void serve_static(int fd, const char *path)
     free(data);
 }
 
-static void handle(int fd, unsigned port, App *app)
+static void handle(Socket fd, unsigned port, App *app)
 {
     Request request;
     int status = read_request(fd, port, &request);
@@ -378,6 +416,12 @@ int main(int argc, char **argv)
         if (!value || value > 65535) { fprintf(stderr, "Invalid port\n"); return 1; }
         port = value;
     }
+#ifdef _WIN32
+    WSADATA winsock;
+    if (WSAStartup(MAKEWORD(2, 2), &winsock) || signal(SIGINT, stop_server) == SIG_ERR) {
+        fprintf(stderr, "Cannot start Winsock\n"); return 1;
+    }
+#else
     struct sigaction signals = {0};
     signals.sa_handler = stop_server;
     sigemptyset(&signals.sa_mask);
@@ -385,19 +429,26 @@ int main(int argc, char **argv)
         || signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
         perror("signal"); return 1;
     }
+#endif
     App app;
     if (!app_init(&app)) { fprintf(stderr, "Cannot allocate demo state\n"); return 1; }
-    int listener = socket(AF_INET, SOCK_STREAM, 0);
-    if (listener < 0) { perror("socket"); app_clear(&app); return 1; }
-    if (fcntl(listener, F_SETFL, O_NONBLOCK) < 0) {
-        perror("nonblocking listener"); close(listener); app_clear(&app); return 1;
-    }
+    Socket listener = socket(AF_INET, SOCK_STREAM, 0);
+    if (listener == BAD_SOCKET) { perror("socket"); app_clear(&app); return 1; }
+#ifdef _WIN32
+    u_long nonblocking = 1;
+    if (ioctlsocket(listener, FIONBIO, &nonblocking)) {
+#else
+    /* Windows skips SO_REUSEADDR: there it lets another process take over the bound port. */
     int reuse = 1;
     (void)setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-    struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons((uint16_t)port),
-                                 .sin_addr = {.s_addr = htonl(INADDR_LOOPBACK)}};
+    if (fcntl(listener, F_SETFL, O_NONBLOCK) < 0) {
+#endif
+        perror("nonblocking listener"); close_socket(listener); app_clear(&app); return 1;
+    }
+    struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons((uint16_t)port)};
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     if (bind(listener, (struct sockaddr *)&address, sizeof(address)) < 0 || listen(listener, 16) < 0) {
-        perror("listen/bind"); close(listener); app_clear(&app); return 1;
+        perror("listen/bind"); close_socket(listener); app_clear(&app); return 1;
     }
     printf("Music lab listening on http://127.0.0.1:%u\n", port);
     fflush(stdout);
@@ -410,16 +461,20 @@ int main(int argc, char **argv)
         if (rc < 0 && errno == EINTR) continue;
         if (rc < 0) { perror("poll"); result = 1; break; }
         if (!rc || stopping) continue;
-        int fd = accept(listener, NULL, NULL);
-        if (fd < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK
-                       || errno == ECONNABORTED)) continue;
-        if (fd < 0) { perror("accept"); result = 1; break; }
+        Socket fd = accept(listener, NULL, NULL);
+        if (fd == BAD_SOCKET && accept_retry()) continue;
+        if (fd == BAD_SOCKET) { perror("accept"); result = 1; break; }
+#ifdef _WIN32
+        DWORD timeout = 2000; /* Winsock takes the send timeout in milliseconds. */
+        if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (const char *)&timeout, sizeof(timeout)) == 0)
+#else
         struct timeval timeout = {.tv_sec = 2};
         if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == 0)
+#endif
             handle(fd, port, &app);
         close_connection(fd);
     }
-    close(listener);
+    close_socket(listener);
     app_clear(&app);
     return result;
 }

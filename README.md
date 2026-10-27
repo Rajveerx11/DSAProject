@@ -4,7 +4,7 @@
 
 Musiclab connects a familiar problem—moving forward and backward through a playlist—to the pointer operations taught in Data Structures and Algorithms. C owns every node and performs every list operation. The browser presents the playlist, plays optional audio previews, and visualizes events recorded by the C implementation.
 
-The project is intended for a second-year DSA demonstration and repository submission. It runs locally on Linux or Windows through WSL without a framework, database, or runtime npm dependencies.
+The project is intended for a second-year DSA demonstration and repository submission. It runs locally on Linux, WSL, or natively on Windows without a framework, database, or runtime npm dependencies.
 
 ## Contents
 
@@ -39,7 +39,7 @@ Generated melodies are 12-second sample tones, **not recordings of the named son
 
 | Tool | Requirement |
 | --- | --- |
-| Operating system | Linux, or Windows using WSL |
+| Operating system | Linux, WSL, or Windows (Visual Studio C++ Build Tools) |
 | C toolchain | C11 compiler and GNU Make; GCC is a suitable default |
 | Browser | A modern browser with JavaScript enabled |
 | Node.js | 18+ for validation; CI uses Node.js 22 |
@@ -63,7 +63,7 @@ wsl.exe --cd /mnt/c/DSAProject -- make
 wsl.exe --cd /mnt/c/DSAProject -- ./build/musiclab --port 8081
 ```
 
-Or double-click **`start.bat`**: it builds in WSL, picks a free temporary port, starts the server in its own window (close it to stop), and opens `http://127.0.0.1:<port>/`. It uses `127.0.0.1` rather than `localhost` because WSL forwards IPv4 only, and some browsers resolve `localhost` to IPv6 `::1`.
+**Windows without WSL:** double-click **`start.bat`**. It compiles with Visual Studio's C compiler (`cl`, from the free "C++ Build Tools"), picks a free temporary port, starts `build\musiclab.exe` in its own window (close it to stop), and opens `http://127.0.0.1:<port>/`. It uses `127.0.0.1` rather than `localhost` because the server listens on IPv4 only, and some browsers try IPv6 `::1` for `localhost`. The steps live in `start.ps1`.
 
 ### First walkthrough
 
